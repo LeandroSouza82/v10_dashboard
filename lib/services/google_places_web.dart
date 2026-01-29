@@ -1,6 +1,6 @@
 // ignore_for_file: uri_does_not_exist, avoid_web_libraries_in_flutter, deprecated_member_use, unused_local_variable
 import 'dart:async';
-import 'dart:html' as html;
+// DOM manipulation done via `dart:js_util` to avoid deprecated `dart:html`.
 import 'dart:js_util' as js_util;
 
 Future<List<Map<String, String>>> fetchPlaceSuggestions(
@@ -33,8 +33,9 @@ Future<List<Map<String, String>>> fetchPlaceSuggestions(
         final p = js_util.getProperty(predictions, i);
         final pid = js_util.getProperty(p, 'place_id') as String?;
         final desc = js_util.getProperty(p, 'description') as String?;
-        if (pid != null && desc != null)
+        if (pid != null && desc != null) {
           list.add({'place_id': pid, 'description': desc});
+        }
       }
     }
     completer.complete(list);
@@ -96,10 +97,12 @@ Future<Map<String, dynamic>?> fetchPlaceDetails(
   final places = js_util.getProperty(maps, 'places');
   if (places == null) return null;
 
-  // PlacesService requires a DOM node
-  final div = html.DivElement();
-  div.style.display = 'none';
-  html.document.body?.append(div);
+  // PlacesService requires a DOM node. Create/remove it via JS interop
+  final document = js_util.getProperty(js_util.globalThis, 'document');
+  final body = document != null ? js_util.getProperty(document, 'body') : null;
+  final div = js_util.callMethod(document, 'createElement', ['div']);
+  js_util.setProperty(js_util.getProperty(div, 'style'), 'display', 'none');
+  if (body != null) js_util.callMethod(body, 'appendChild', [div]);
   try {
     final serviceCtor = js_util.getProperty(places, 'PlacesService');
     if (serviceCtor == null) return null;
@@ -141,8 +144,12 @@ Future<Map<String, dynamic>?> fetchPlaceDetails(
     ]);
     return completer.future;
   } finally {
-    // remove the temporary div
-    html.document.body?.children.remove(div);
+    // remove the temporary div via JS interop
+    if (body != null) {
+      try {
+        js_util.callMethod(body, 'removeChild', [div]);
+      } catch (_) {}
+    }
   }
 }
 

@@ -48,9 +48,9 @@ class _SidebarPedidoState extends State<SidebarPedido> {
     super.initState();
     // Diagnostic: confirmar leitura da API key do config
     try {
-      print('DEBUG: ApiKeys.googleMapsKey=${ApiKeys.googleMapsKey}');
+      debugPrint('DEBUG: ApiKeys.googleMapsKey=${ApiKeys.googleMapsKey}');
     } catch (e) {
-      print('DEBUG: falha ao ler ApiKeys.googleMapsKey: $e');
+      debugPrint('DEBUG: falha ao ler ApiKeys.googleMapsKey: $e');
     }
   }
 
@@ -155,7 +155,7 @@ class _SidebarPedidoState extends State<SidebarPedido> {
       final key = ApiKeys.googleMapsKey;
       return await geocodeAddress(address, key);
     } catch (e) {
-      print('DEBUG: geocodeAddress error: $e');
+      debugPrint('DEBUG: geocodeAddress error: $e');
       return null;
     }
   }
@@ -183,7 +183,7 @@ class _SidebarPedidoState extends State<SidebarPedido> {
         _showPlaceSuggestions = list.isNotEmpty;
       });
     } catch (e) {
-      print('DEBUG: Places autocomplete exception: $e');
+      debugPrint('DEBUG: Places autocomplete exception: $e');
     }
   }
 
@@ -205,7 +205,7 @@ class _SidebarPedidoState extends State<SidebarPedido> {
         _showPlaceSuggestions = false;
       });
     } catch (e) {
-      print('DEBUG: Places details exception: $e');
+      debugPrint('DEBUG: Places details exception: $e');
     }
   }
 
@@ -242,38 +242,32 @@ class _SidebarPedidoState extends State<SidebarPedido> {
                               ElevatedButton(
                                 onPressed: () async {
                                   try {
-                                    print(
-                                      'DEBUG: iniciando diagnostico de insercao no Supabase',
-                                    );
+                                    debugPrint('DEBUG: iniciando diagnostico de insercao no Supabase');
                                     await SupabaseService.instance
                                         .diagnosticoInserirEntrega();
-                                    print(
-                                      'DEBUG: diagnostico de insercao finalizado',
-                                    );
-                                    if (mounted)
-                                      ScaffoldMessenger.of(
-                                        context,
-                                      ).showSnackBar(
+                                    debugPrint('DEBUG: diagnostico de insercao finalizado');
+                                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                                      if (!mounted) return;
+                                      ScaffoldMessenger.of(context).showSnackBar(
                                         const SnackBar(
                                           content: Text(
                                             'Diagnóstico: tentativa de insert executada (veja console)',
                                           ),
                                         ),
                                       );
+                                    });
                                   } catch (e) {
-                                    print(
-                                      'DEBUG: diagnostico insercao erro: $e',
-                                    );
-                                    if (mounted)
-                                      ScaffoldMessenger.of(
-                                        context,
-                                      ).showSnackBar(
+                                    debugPrint('DEBUG: diagnostico insercao erro: $e');
+                                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                                      if (!mounted) return;
+                                      ScaffoldMessenger.of(context).showSnackBar(
                                         SnackBar(
                                           content: Text(
                                             'Diagnóstico falhou: $e',
                                           ),
                                         ),
                                       );
+                                    });
                                   }
                                 },
                                 child: const Text('Diagnóstico Supabase'),
@@ -504,21 +498,16 @@ class _SidebarPedidoState extends State<SidebarPedido> {
                                   const SizedBox(width: 12),
                                   Expanded(
                                     child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
+                                      crossAxisAlignment: CrossAxisAlignment.start,
                                       children: [
                                         Text(
                                           e.cliente,
-                                          style: Theme.of(
-                                            context,
-                                          ).textTheme.titleMedium,
+                                          style: Theme.of(context).textTheme.titleMedium,
                                         ),
                                         const SizedBox(height: 6),
                                         Text(
                                           e.endereco,
-                                          style: Theme.of(
-                                            context,
-                                          ).textTheme.bodySmall,
+                                          style: Theme.of(context).textTheme.bodySmall,
                                         ),
                                       ],
                                     ),
@@ -748,41 +737,92 @@ class _SidebarPedidoState extends State<SidebarPedido> {
                                         ),
                                       );
                                       try {
-                                        await SupabaseService.instance
-                                            .criarRota(m.id, rota);
-                                        // Após salvar a rota, persista a ordem de entrega
-                                        for (var j = 0; j < rota.length; j++) {
-                                          final ent = rota[j];
+                                        final key = ApiKeys.googleMapsKey;
+                                        final base = PainelMapa.globalKey.currentState?.empresaLocation ?? const LatLng(-27.4946, -48.6577);
+
+                                        final entregasWithCoords = rota.where((e) => e.lat != null && e.lng != null).toList();
+                                        final anyRecolha = rota.any((e) => e.tipo.toLowerCase().contains('recolh'));
+
+                                        String origin;
+                                        String destination;
+                                        List<String> waypointsForGoogle = [];
+
+                                        if (anyRecolha) {
+                                          origin = '${m.latitude},${m.longitude}';
+                                          destination = '${base.latitude},${base.longitude}';
+                                          waypointsForGoogle = entregasWithCoords.map((e) => '${e.lat},${e.lng}').toList();
+                                        } else {
                                           try {
-                                            await SupabaseService.instance
-                                                .atualizarOrdemEntrega(
-                                                  ent.id,
-                                                  j + 1,
-                                                );
+                                            final last = await SupabaseService.instance.buscarUltimaEntregaDoMotorista(m.id);
+                                            if (last != null && last.lat != null && last.lng != null) {
+                                              origin = '${last.lat},${last.lng}';
+                                            } else {
+                                              origin = '${m.latitude},${m.longitude}';
+                                            }
+                                          } catch (_) {
+                                            origin = '${m.latitude},${m.longitude}';
+                                          }
+                                          destination = '${base.latitude},${base.longitude}';
+                                          final cityWaypoints = entregasWithCoords.where((e) {
+                                            final c = e.cidade.toLowerCase();
+                                            return c.contains('sao jose') || c.contains('são jos') || c.contains('são josé') || c.contains('sao josé') || c.contains('sao jose');
+                                          }).toList();
+                                          if (cityWaypoints.isNotEmpty) {
+                                            waypointsForGoogle = cityWaypoints.map((e) => '${e.lat},${e.lng}').toList();
+                                          } else {
+                                            waypointsForGoogle = entregasWithCoords.map((e) => '${e.lat},${e.lng}').toList();
+                                          }
+                                        }
+
+                                        List<Entrega> optimizedRota = rota;
+                                        try {
+                                          if (waypointsForGoogle.isNotEmpty) {
+                                            final wpOrder = await getOptimizedWaypointOrder(
+                                              apiKey: key,
+                                              origin: origin,
+                                              destination: destination,
+                                              waypoints: waypointsForGoogle,
+                                            );
+                                            if (wpOrder != null && wpOrder.isNotEmpty) {
+                                              final reordered = <Entrega>[];
+                                              for (final idx in wpOrder) {
+                                                if (idx < entregasWithCoords.length) reordered.add(entregasWithCoords[idx]);
+                                              }
+                                              if (reordered.isNotEmpty) {
+                                                optimizedRota = reordered;
+                                              }
+                                            }
+                                          }
+                                        } catch (_) {}
+
+                                        await SupabaseService.instance.criarRota(m.id, optimizedRota);
+                                        for (var j = 0; j < optimizedRota.length; j++) {
+                                          final ent = optimizedRota[j];
+                                          try {
+                                            await SupabaseService.instance.atualizarOrdemEntrega(ent.id, j + 1);
                                           } catch (_) {}
                                         }
-                                        // Obrigatório: limpar lista local de pendentes e notificar UI
+
+                                        // Notify driver about updated route (alert on mobile)
+                                        try {
+                                          await SupabaseService.instance.enviarMensagemChat(
+                                            remetenteId: 'gestor',
+                                            destinatarioId: m.id,
+                                            texto: 'Sua rota foi atualizada com novos pontos otimizados',
+                                          );
+                                        } catch (_) {}
+
                                         if (!mounted) return;
                                         pedidosPendentes.clear();
                                         setState(() {});
-                                        WidgetsBinding.instance
-                                            .addPostFrameCallback((_) {
-                                              if (!mounted) return;
-                                              ScaffoldMessenger.of(
-                                                context,
-                                              ).showSnackBar(
-                                                const SnackBar(
-                                                  content: Text(
-                                                    'Rota enviada com sucesso!',
-                                                  ),
-                                                ),
-                                              );
-                                            });
-                                        // Reset completo do mapa (remove marcadores/polylines)
-                                        PainelMapa.globalKey.currentState
-                                            ?.clearAllMarkers();
+                                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                                          if (!mounted) return;
+                                          Navigator.of(context).pop();
+                                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Rota enviada com sucesso!')));
+                                        });
 
-                                        // Também limpar formulários e fechar modal
+                                        PainelMapa.globalKey.currentState?.clearAllMarkers();
+
                                         if (!mounted) return;
                                         setState(() {
                                           _nomeController.clear();
@@ -790,27 +830,17 @@ class _SidebarPedidoState extends State<SidebarPedido> {
                                           _obsController.clear();
                                           _tipoServico = 'entrega';
                                         });
-                                        WidgetsBinding.instance
-                                            .addPostFrameCallback((_) {
-                                              if (!mounted) return;
-                                              Navigator.of(context).pop();
-                                            });
+                                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                                          if (!mounted) return;
+                                          Navigator.of(context).pop();
+                                        });
                                       } catch (err) {
                                         if (!mounted) return;
-                                        WidgetsBinding.instance
-                                            .addPostFrameCallback((_) {
-                                              if (!mounted) return;
-                                              Navigator.of(context).pop();
-                                              ScaffoldMessenger.of(
-                                                context,
-                                              ).showSnackBar(
-                                                SnackBar(
-                                                  content: Text(
-                                                    'Erro ao enviar rota: $err',
-                                                  ),
-                                                ),
-                                              );
-                                            });
+                                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                                          if (!mounted) return;
+                                          Navigator.of(context).pop();
+                                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Erro ao enviar rota: $err')));
+                                        });
                                       }
                                     },
                                   );

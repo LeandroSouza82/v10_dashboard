@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:math' as math;
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+// 'foundation' imported elsewhere via material; remove redundant import
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -22,12 +22,16 @@ class PainelMapa extends StatefulWidget {
   State<PainelMapa> createState() => PainelMapaState();
 }
 
-class PainelMapaState extends State<PainelMapa> {
+class PainelMapaState extends State<PainelMapa> with TickerProviderStateMixin {
   final Completer<GoogleMapController> _controller = Completer();
 
   final Set<Marker> _markers = <Marker>{};
   final Set<Marker> _motoristaMarkers = <Marker>{};
   final Set<Marker> _entregaMarkers = <Marker>{};
+  // Keep a map of motorista_id -> Marker to update positions without flicker
+  final Map<String, Marker> _motoristasMarkersMap = <String, Marker>{};
+  // Active animation controllers for markers (to interpolate movement)
+  final Map<String, AnimationController> _motoristaAnimControllers = <String, AnimationController>{};
 
   StreamSubscription<List<Motorista>>? _motoristaSub;
   StreamSubscription<List<Entrega>>? _entregasSub;
@@ -63,29 +67,44 @@ class PainelMapaState extends State<PainelMapa> {
   }
 
   void _listenMotoristas() {
-    _motoristaSub = SupabaseService.instance.streamMotoristasOnline().listen((
-      list,
-    ) {
-      final newMarkers = <Marker>{};
-      for (final m in list) {
-        final lat = m.latitude;
-        final lng = m.longitude;
-        if (lat == null || lng == null) continue;
-        newMarkers.add(
-          Marker(
-            markerId: MarkerId('motorista_${m.id}'),
-            position: LatLng(lat, lng),
-            infoWindow: InfoWindow(title: m.nome),
-          ),
-        );
-      }
-      setState(() {
-        _motoristaMarkers
-          ..clear()
-          ..addAll(newMarkers);
-        _rebuildMarkers();
-      });
-    }, onError: (_) {});
+    _motoristaSub = SupabaseService.instance.streamMotoristasOnline().listen(
+      (list) {
+        try {
+          for (final m in list) {
+            final lat = m.latitude;
+            final lng = m.longitude;
+            if (lat == null || lng == null) continue;
+            final id = m.id.toString();
+
+            final newPos = LatLng(lat, lng);
+
+            // If we already have a marker for this motorista, animate to new position
+            final existing = _motoristasMarkersMap[id];
+            if (existing != null) {
+              _animateMarkerTo(id, existing.position, newPos, title: m.nome);
+            } else {
+              final marker = Marker(
+                markerId: MarkerId('motorista_$id'),
+                position: newPos,
+                infoWindow: InfoWindow(title: m.nome),
+                icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+              );
+              _motoristasMarkersMap[id] = marker;
+              _motoristaMarkers.add(marker);
+            }
+          }
+          if (!mounted) return;
+          setState(() {
+            _rebuildMarkers();
+          });
+        } catch (e) {
+          debugPrint('Erro no listener de motoristas: $e');
+        }
+      },
+      onError: (err) {
+        debugPrint('Realtime error (motoristas): $err');
+      },
+    );
   }
 
   void _listenEntregas() {
@@ -125,6 +144,70 @@ class PainelMapaState extends State<PainelMapa> {
       ..addAll(_entregaMarkers);
     if (_posicaoEmpresa != null) _markers.add(_companyMarker());
   }
+
+  void _animateMarkerTo(String id, LatLng from, LatLng to, {String? title}) {
+    final duration = Duration(milliseconds: 700);
+
+    // Keep a reference to the starting marker
+    final startMarker = _motoristasMarkersMap[id];
+    if (startMarker == null) {
+      // create a new marker if missing
+      final marker = Marker(
+        markerId: MarkerId('motorista_$id'),
+        position: to,
+        infoWindow: InfoWindow(title: title ?? ''),
+        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+      );
+      _motoristasMarkersMap[id] = marker;
+      _motoristaMarkers.add(marker);
+      if (!mounted) return;
+      setState(() => _rebuildMarkers());
+      return;
+    }
+
+    // Dispose previous controller if exists
+    _motoristaAnimControllers[id]?.dispose();
+
+    final controller = AnimationController(vsync: this, duration: duration);
+    final curved = CurvedAnimation(parent: controller, curve: Curves.easeInOut);
+
+    // Tween lat/lng separately and update marker on each tick
+    final latTween = Tween<double>(begin: from.latitude, end: to.latitude);
+    final lngTween = Tween<double>(begin: from.longitude, end: to.longitude);
+
+    void listener() {
+      final lat = latTween.evaluate(curved);
+      final lng = lngTween.evaluate(curved);
+      final updated = startMarker.copyWith(
+        positionParam: LatLng(lat, lng),
+        infoWindowParam: InfoWindow(title: title ?? startMarker.infoWindow.title ?? ''),
+      );
+      _motoristasMarkersMap[id] = updated;
+      _motoristaMarkers
+        ..removeWhere((m) => m.markerId == updated.markerId)
+        ..add(updated);
+      if (mounted) setState(() => _rebuildMarkers());
+    }
+
+    controller.addListener(listener);
+    controller.addStatusListener((status) {
+      if (status == AnimationStatus.completed || status == AnimationStatus.dismissed) {
+        controller.removeListener(listener);
+        _motoristaAnimControllers.remove(id)?.dispose();
+      }
+    });
+
+    _motoristaAnimControllers[id] = controller;
+    controller.forward();
+  }
+
+  /// Interpolates a motorista marker position from `from` to `to` using an
+  /// [AnimationController] with an easeInOut curve. This avoids timer-based
+  /// updates and provides smoother motion. The function updates the internal
+  /// `_motoristasMarkersMap` and triggers a minimal `setState` to repaint the
+  /// map markers. For web-specific AdvancedMarkerElement integration, a
+  /// separate code path should replace Marker instances with JS-backed
+  /// AdvancedMarkerElement objects (requires access to underlying JS map).
 
   Marker _companyMarker() {
     final id = 'base_empresa';
@@ -194,11 +277,11 @@ class PainelMapaState extends State<PainelMapa> {
     try {
       final resp = await http.get(Uri.parse(url));
       if (resp.statusCode == 200) {
-        final bytes = resp.bodyBytes;
-        if (bytes.isNotEmpty) {
-          _companyIcon = BitmapDescriptor.bytes(Uint8List.fromList(bytes));
+          final bytes = resp.bodyBytes;
+          if (bytes.isNotEmpty) {
+            _companyIcon = BitmapDescriptor.bytes(bytes);
+          }
         }
-      }
     } catch (_) {}
   }
 

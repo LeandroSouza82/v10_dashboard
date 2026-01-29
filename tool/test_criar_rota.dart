@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 
 void main() {
   final entregas = [
@@ -18,6 +19,6 @@ void main() {
     'created_at': DateTime.now().toIso8601String(),
   };
 
-  print('DEBUG: payload simulado para criar rota:');
-  print(const JsonEncoder.withIndent('  ').convert(payload));
+  debugPrint('DEBUG: payload simulado para criar rota:');
+  debugPrint(const JsonEncoder.withIndent('  ').convert(payload));
 }

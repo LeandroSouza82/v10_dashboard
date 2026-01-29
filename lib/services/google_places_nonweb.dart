@@ -23,8 +23,9 @@ Future<List<Map<String, String>>> fetchPlaceSuggestions(
   for (final p in preds) {
     final pid = (p as Map<String, dynamic>)['place_id'] as String?;
     final desc = p['description'] as String?;
-    if (pid != null && desc != null)
+    if (pid != null && desc != null) {
       list.add({'place_id': pid, 'description': desc});
+    }
   }
   return list;
 }

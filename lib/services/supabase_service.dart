@@ -323,6 +323,25 @@ class SupabaseService {
     }
   }
 
+  Future<Entrega?> buscarUltimaEntregaDoMotorista(String motoristaId) async {
+    try {
+      final parsedMotoristaId = int.tryParse(motoristaId) ?? motoristaId;
+      final data = await _supabase
+          .from('entregas')
+          .select()
+          .eq('motorista_id', parsedMotoristaId)
+          .order('ordem_entrega', ascending: false)
+          .limit(1)
+          .maybeSingle();
+      final map = _toMap(data);
+      if (map == null) return null;
+      return Entrega.fromJson(map);
+    } catch (e) {
+      debugPrint('Erro no SupabaseService (buscarUltimaEntregaDoMotorista): $e');
+      rethrow;
+    }
+  }
+
   Future<List<Entrega>> buscarEntregasPendentes() async {
     try {
       final data = await _supabase

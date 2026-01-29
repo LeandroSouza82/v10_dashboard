@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 
-/// Calls Google Directions REST API and returns waypoint_order as List<int>
+/* Calls Google Directions REST API and returns waypoint_order as List<int> */
 Future<List<int>?> getOptimizedWaypointOrder({
   required String apiKey,
   required String origin,
