@@ -380,15 +380,20 @@ class SupabaseService {
       };
       // Confirmar: a coluna/field usada para guardar os ids das entregas é exatamente 'entregas'
       assert(payload.keys.contains('entregas'));
+      // Debug: imprimir payload completo que será enviado ao Supabase
+      try {
+        debugPrint('DEBUG: criando rota payload -> ${jsonEncode(payload)}');
+      } catch (_) {}
       await _supabase.from('rotas').insert(payload);
 
       // Após criar rota, atualizar status das entregas para 'em_rota' em massa
       try {
         // Use filter with 'in' operator to update multiple ids in one call
         final idsParam = '(${entregaIds.map((e) => e.toString()).join(',')})';
+        // Atualizar status e atribuir motorista_id nas entregas em massa
         await _supabase
             .from('entregas')
-            .update({'status': 'em_rota'})
+            .update({'status': 'em_rota', 'motorista_id': parsedMotorista})
             .filter('id', 'in', idsParam);
       } catch (err) {
         debugPrint(
@@ -397,7 +402,8 @@ class SupabaseService {
         // fallback: tentar atualizar individualmente
         for (final e in entregas) {
           try {
-            await atualizarStatusEntrega(e.id, 'em_rota');
+            // tentar atualizar status e motorista_id individualmente
+            await _supabase.from('entregas').update({'status': 'em_rota', 'motorista_id': parsedMotorista}).eq('id', int.tryParse(e.id) ?? e.id);
           } catch (err2) {
             debugPrint(
               'Aviso: não foi possível atualizar status da entrega ${e.id}: $err2',
