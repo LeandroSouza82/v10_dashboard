@@ -342,7 +342,8 @@ class SupabaseService {
         'motorista_id': parsedMotorista,
         // persistimos o array como string JSON para compatibilidade com schemas existentes
         'entregas': jsonEncode(entregaIds),
-        'status': 'ativa',
+        // Registrar rota como pendente por padrão
+        'status': 'pendente',
         'created_at': DateTime.now().toIso8601String(),
       };
       // Confirmar: a coluna/field usada para guardar os ids das entregas é exatamente 'entregas'

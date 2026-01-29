@@ -43,7 +43,17 @@ class _SidebarPedidoState extends State<SidebarPedido> {
     try {
       // tentar geocoding se endereço preenchido - obrigatório antes do envio
       if ((_enderecoController.text).trim().isNotEmpty) {
-        final coords = await _geocodeAddress(_enderecoController.text.trim());
+        // limpar endereço: colapsar traços múltiplos e espaços extras
+        var addr = _enderecoController.text.trim();
+        addr = addr.replaceAll(RegExp(r'-{2,}'), '-').replaceAll(RegExp(r'\s{2,}'), ' ').trim();
+
+        // primeira tentativa
+        var coords = await _geocodeAddress(addr);
+        // segunda tentativa: adicionar ", Brasil" se primeira falhar
+        if (coords == null) {
+          coords = await _geocodeAddress('$addr, Brasil');
+        }
+
         if (coords == null) {
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
@@ -59,6 +69,10 @@ class _SidebarPedidoState extends State<SidebarPedido> {
         // garantir doubles
         _lat = (coords['lat'] as double);
         _lng = (coords['lng'] as double);
+        // debug rápido das coordenadas
+        try {
+          print('Lat: ${_lat}, Lng: ${_lng}');
+        } catch (_) {}
       }
       final entrega = Entrega(
         id: DateTime.now().millisecondsSinceEpoch.toString(),
@@ -96,6 +110,10 @@ class _SidebarPedidoState extends State<SidebarPedido> {
               BitmapDescriptor.hueOrange,
             ),
           );
+          // debug coordenadas do marker
+          try {
+            print('Lat: ${markerLat}, Lng: ${markerLng}');
+          } catch (_) {}
           PainelMapa.globalKey.currentState?.addDeliveryMarker(marker);
         } catch (_) {
           // ignore if map not ready
