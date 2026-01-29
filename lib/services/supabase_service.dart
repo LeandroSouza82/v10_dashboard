@@ -355,21 +355,22 @@ class SupabaseService {
       // motoristas agora usam UUID/text no banco: tratar motorista_id estritamente como String
       final parsedMotorista = motoristaId;
 
-        final entregaIds = entregas
+      final entregaIds = entregas
           .map((e) => int.tryParse(e.id) ?? e.id)
           .toList();
-        // Função de debug: retorna payload que seria enviado para o Supabase
-        Map<String, dynamic> gerarPayloadRotaDebug() {
-          return {
-            'motorista_id': parsedMotorista,
-            'entregas': jsonEncode(entregaIds),
-            'status': 'pendente',
-            'created_at': DateTime.now().toIso8601String(),
-          };
-        }
-        // Expose payload generator for local debugging
-        // (não realiza nenhuma operação no Supabase)
-        // Uso: SupabaseService.instance.gerarPayloadRotaDebug(motoristaId, entregas)
+      // Função de debug: retorna payload que seria enviado para o Supabase
+      Map<String, dynamic> gerarPayloadRotaDebug() {
+        return {
+          'motorista_id': parsedMotorista,
+          'entregas': jsonEncode(entregaIds),
+          'status': 'pendente',
+          'created_at': DateTime.now().toIso8601String(),
+        };
+      }
+
+      // Expose payload generator for local debugging
+      // (não realiza nenhuma operação no Supabase)
+      // Uso: SupabaseService.instance.gerarPayloadRotaDebug(motoristaId, entregas)
       final payload = {
         'motorista_id': parsedMotorista,
         // persistimos o array como string JSON para compatibilidade com schemas existentes
@@ -403,7 +404,10 @@ class SupabaseService {
         for (final e in entregas) {
           try {
             // tentar atualizar status e motorista_id individualmente (motorista_id como String)
-            await _supabase.from('entregas').update({'status': 'em_rota', 'motorista_id': parsedMotorista}).eq('id', e.id);
+            await _supabase
+                .from('entregas')
+                .update({'status': 'em_rota', 'motorista_id': parsedMotorista})
+                .eq('id', e.id);
           } catch (err2) {
             debugPrint(
               'Aviso: não foi possível atualizar status da entrega ${e.id}: $err2',
@@ -422,6 +426,18 @@ class SupabaseService {
       await _supabase.from('entregas').delete().eq('id', int.parse(entregaId));
     } catch (e) {
       debugPrint('Erro no SupabaseService (excluirEntrega): $e');
+      rethrow;
+    }
+  }
+
+  Future<void> atualizarOrdemEntrega(String entregaId, int ordem) async {
+    try {
+      await _supabase
+          .from('entregas')
+          .update({'ordem_entrega': ordem})
+          .eq('id', entregaId);
+    } catch (e) {
+      debugPrint('Erro no SupabaseService (atualizarOrdemEntrega): $e');
       rethrow;
     }
   }

@@ -7,6 +7,7 @@ import '../services/rota_service.dart';
 import 'dart:async';
 import '../core/constants/api_keys.dart';
 import '../services/google_places.dart';
+import '../services/google_directions.dart';
 import 'painel_mapa.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
@@ -241,13 +242,38 @@ class _SidebarPedidoState extends State<SidebarPedido> {
                               ElevatedButton(
                                 onPressed: () async {
                                   try {
-                                    print('DEBUG: iniciando diagnostico de insercao no Supabase');
-                                    await SupabaseService.instance.diagnosticoInserirEntrega();
-                                    print('DEBUG: diagnostico de insercao finalizado');
-                                    if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Diagnóstico: tentativa de insert executada (veja console)')));
+                                    print(
+                                      'DEBUG: iniciando diagnostico de insercao no Supabase',
+                                    );
+                                    await SupabaseService.instance
+                                        .diagnosticoInserirEntrega();
+                                    print(
+                                      'DEBUG: diagnostico de insercao finalizado',
+                                    );
+                                    if (mounted)
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
+                                        const SnackBar(
+                                          content: Text(
+                                            'Diagnóstico: tentativa de insert executada (veja console)',
+                                          ),
+                                        ),
+                                      );
                                   } catch (e) {
-                                    print('DEBUG: diagnostico insercao erro: $e');
-                                    if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Diagnóstico falhou: $e')));
+                                    print(
+                                      'DEBUG: diagnostico insercao erro: $e',
+                                    );
+                                    if (mounted)
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
+                                        SnackBar(
+                                          content: Text(
+                                            'Diagnóstico falhou: $e',
+                                          ),
+                                        ),
+                                      );
                                   }
                                 },
                                 child: const Text('Diagnóstico Supabase'),
@@ -599,10 +625,45 @@ class _SidebarPedidoState extends State<SidebarPedido> {
                                 .currentState
                                 ?.empresaLocation ??
                             const LatLng(-27.4946, -48.6577);
-                        final rota = RotaService().calcularRotaOtimizada(
-                          base,
-                          entregas,
-                        );
+
+                        // Prepare waypoints for Directions API (lat,lng strings)
+                        final waypoints = <String>[];
+                        final entregasWithCoords = <Entrega>[];
+                        for (final e in entregas) {
+                          if (e.lat == null || e.lng == null) continue;
+                          waypoints.add('${e.lat},${e.lng}');
+                          entregasWithCoords.add(e);
+                        }
+
+                        // Try to get optimized order from Google Directions
+                        List<int>? wpOrder;
+                        try {
+                          final key = ApiKeys.googleMapsKey;
+                          // choose web or non-web implementation via conditional export
+                          wpOrder = await getOptimizedWaypointOrder(
+                            apiKey: key,
+                            origin: '${base.latitude},${base.longitude}',
+                            destination: '${base.latitude},${base.longitude}',
+                            waypoints: waypoints,
+                          );
+                        } catch (_) {
+                          // ignore and fallback to local optimization
+                        }
+
+                        List<Entrega> rota = [];
+                        if (wpOrder != null && wpOrder.isNotEmpty) {
+                          for (final idx in wpOrder) {
+                            if (idx < entregasWithCoords.length) {
+                              rota.add(entregasWithCoords[idx]);
+                            }
+                          }
+                        } else {
+                          // fallback to local calculation if Directions API failed
+                          rota = RotaService().calcularRotaOtimizada(
+                            base,
+                            entregas,
+                          );
+                        }
 
                         for (var i = 0; i < rota.length; i++) {
                           final e = rota[i];
@@ -689,6 +750,17 @@ class _SidebarPedidoState extends State<SidebarPedido> {
                                       try {
                                         await SupabaseService.instance
                                             .criarRota(m.id, rota);
+                                        // Após salvar a rota, persista a ordem de entrega
+                                        for (var j = 0; j < rota.length; j++) {
+                                          final ent = rota[j];
+                                          try {
+                                            await SupabaseService.instance
+                                                .atualizarOrdemEntrega(
+                                                  ent.id,
+                                                  j + 1,
+                                                );
+                                          } catch (_) {}
+                                        }
                                         // Obrigatório: limpar lista local de pendentes e notificar UI
                                         if (!mounted) return;
                                         pedidosPendentes.clear();

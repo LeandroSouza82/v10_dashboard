@@ -4,16 +4,20 @@ import 'dart:html' as html;
 import 'dart:js_util' as js_util;
 
 Future<List<Map<String, String>>> fetchPlaceSuggestions(
-    String input, String apiKey) async {
+  String input,
+  String apiKey,
+) async {
   final google = js_util.getProperty(js_util.globalThis, 'google');
   if (google == null) return [];
   final maps = js_util.getProperty(google, 'maps');
   if (maps == null) return [];
   final places = js_util.getProperty(maps, 'places');
   if (places == null) return [];
-  final autocompleteCtor = js_util.getProperty(places, 'AutocompleteService');
-  if (autocompleteCtor == null) return [];
-  final autocomplete = js_util.callConstructor(autocompleteCtor, []);
+  // Prefer new AutocompleteSuggestion API if available, otherwise fall back
+  // to the legacy AutocompleteService to remain compatible.
+  final suggestionCtor =
+      js_util.getProperty(places, 'AutocompleteSuggestion') ??
+      js_util.getProperty(places, 'AutocompleteSuggestionService');
 
   final completer = Completer<List<Map<String, String>>>();
 
@@ -29,22 +33,62 @@ Future<List<Map<String, String>>> fetchPlaceSuggestions(
         final p = js_util.getProperty(predictions, i);
         final pid = js_util.getProperty(p, 'place_id') as String?;
         final desc = js_util.getProperty(p, 'description') as String?;
-        if (pid != null && desc != null) list.add({'place_id': pid, 'description': desc});
+        if (pid != null && desc != null)
+          list.add({'place_id': pid, 'description': desc});
       }
     }
     completer.complete(list);
   }
 
-  js_util.callMethod(
-      autocomplete,
-      'getPlacePredictions',
-      [js_util.jsify({'input': input, 'componentRestrictions': {'country': 'br'}}), js_util.allowInterop(callback)]);
+  if (suggestionCtor != null) {
+    try {
+      final suggestion = js_util.callConstructor(suggestionCtor, []);
+      // Try common method names used by different versions of the new API.
+      try {
+        js_util.callMethod(suggestion, 'getSuggestions', [
+          js_util.jsify({
+            'input': input,
+            'componentRestrictions': {'country': 'br'},
+          }),
+          js_util.allowInterop(callback),
+        ]);
+        return completer.future;
+      } catch (_) {}
+      try {
+        js_util.callMethod(suggestion, 'getPlacePredictions', [
+          js_util.jsify({
+            'input': input,
+            'componentRestrictions': {'country': 'br'},
+          }),
+          js_util.allowInterop(callback),
+        ]);
+        return completer.future;
+      } catch (_) {}
+    } catch (_) {
+      // fall through to legacy path
+    }
+  }
+
+  // Legacy fallback: AutocompleteService
+  final autocompleteCtor = js_util.getProperty(places, 'AutocompleteService');
+  if (autocompleteCtor == null) return [];
+  final autocomplete = js_util.callConstructor(autocompleteCtor, []);
+
+  js_util.callMethod(autocomplete, 'getPlacePredictions', [
+    js_util.jsify({
+      'input': input,
+      'componentRestrictions': {'country': 'br'},
+    }),
+    js_util.allowInterop(callback),
+  ]);
 
   return completer.future;
 }
 
 Future<Map<String, dynamic>?> fetchPlaceDetails(
-    String placeId, String apiKey) async {
+  String placeId,
+  String apiKey,
+) async {
   final google = js_util.getProperty(js_util.globalThis, 'google');
   if (google == null) return null;
   final maps = js_util.getProperty(google, 'maps');
@@ -67,9 +111,12 @@ Future<Map<String, dynamic>?> fetchPlaceDetails(
         completer.complete(null);
         return;
       }
-      final formatted = js_util.getProperty(result, 'formatted_address') as String?;
+      final formatted =
+          js_util.getProperty(result, 'formatted_address') as String?;
       final geometry = js_util.getProperty(result, 'geometry');
-      final location = geometry != null ? js_util.getProperty(geometry, 'location') : null;
+      final location = geometry != null
+          ? js_util.getProperty(geometry, 'location')
+          : null;
       double? lat;
       double? lng;
       if (location != null) {
@@ -85,7 +132,13 @@ Future<Map<String, dynamic>?> fetchPlaceDetails(
       completer.complete({'formatted': formatted, 'lat': lat, 'lng': lng});
     }
 
-    js_util.callMethod(service, 'getDetails', [js_util.jsify({'placeId': placeId, 'fields': ['formatted_address', 'geometry']}), js_util.allowInterop(callback)]);
+    js_util.callMethod(service, 'getDetails', [
+      js_util.jsify({
+        'placeId': placeId,
+        'fields': ['formatted_address', 'geometry'],
+      }),
+      js_util.allowInterop(callback),
+    ]);
     return completer.future;
   } finally {
     // remove the temporary div
@@ -93,7 +146,10 @@ Future<Map<String, dynamic>?> fetchPlaceDetails(
   }
 }
 
-Future<Map<String, double>?> geocodeAddress(String address, String apiKey) async {
+Future<Map<String, double>?> geocodeAddress(
+  String address,
+  String apiKey,
+) async {
   final google = js_util.getProperty(js_util.globalThis, 'google');
   if (google == null) return null;
   final maps = js_util.getProperty(google, 'maps');
@@ -116,7 +172,9 @@ Future<Map<String, double>?> geocodeAddress(String address, String apiKey) async
     }
     final first = js_util.getProperty(results, 0);
     final geometry = js_util.getProperty(first, 'geometry');
-    final location = geometry != null ? js_util.getProperty(geometry, 'location') : null;
+    final location = geometry != null
+        ? js_util.getProperty(geometry, 'location')
+        : null;
     if (location == null) {
       completer.complete(null);
       return;
@@ -132,6 +190,9 @@ Future<Map<String, double>?> geocodeAddress(String address, String apiKey) async
     }
   }
 
-  js_util.callMethod(geocoder, 'geocode', [js_util.jsify({'address': address}), js_util.allowInterop(callback)]);
+  js_util.callMethod(geocoder, 'geocode', [
+    js_util.jsify({'address': address}),
+    js_util.allowInterop(callback),
+  ]);
   return completer.future;
 }
