@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import '../widgets/sidebar_pedido.dart';
 import '../widgets/painel_mapa.dart';
 import '../widgets/chat_motorista.dart';
-import '../widgets/gestao_motoristas.dart';
+// gestão movida para Sidebar
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -37,10 +37,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             icon: Icon(Icons.chat),
                             label: 'Chat',
                           ),
-                          NavigationDestination(
-                            icon: Icon(Icons.people),
-                            label: 'Gestão',
-                          ),
                         ],
                         selectedIndex: _paginaSelecionada,
                         onDestinationSelected: (i) =>
@@ -49,11 +45,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       Expanded(
                         child: IndexedStack(
                           index: _paginaSelecionada,
-                          children: [
-                            PainelMapa(),
-                            ChatMotorista(),
-                            GestaoMotoristas(),
-                          ],
+                          children: [PainelMapa(), ChatMotorista()],
                         ),
                       ),
                     ],
@@ -67,11 +59,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             children: [
               IndexedStack(
                 index: _paginaSelecionada,
-                children: [
-                  PainelMapa(),
-                  ChatMotorista(),
-                  GestaoMotoristas(),
-                ],
+                children: [PainelMapa(), ChatMotorista()],
               ),
               Positioned(
                 bottom: 12,
@@ -90,10 +78,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       BottomNavigationBarItem(
                         icon: Icon(Icons.chat),
                         label: 'Chat',
-                      ),
-                      BottomNavigationBarItem(
-                        icon: Icon(Icons.people),
-                        label: 'Gestão',
                       ),
                     ],
                   ),

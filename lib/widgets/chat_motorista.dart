@@ -62,7 +62,12 @@ class _ChatMotoristaState extends State<ChatMotorista> {
             builder: (context, snapshot) {
               final drivers = snapshot.data ?? [];
               return DropdownButton<String>(
-                value: drivers.any((m) => m.id.toString() == _motoristaSelecionadoId) ? _motoristaSelecionadoId : null,
+                value:
+                    drivers.any(
+                      (m) => m.id.toString() == _motoristaSelecionadoId,
+                    )
+                    ? _motoristaSelecionadoId
+                    : null,
                 hint: const Text('Selecione motorista'),
                 items: drivers
                     .map(

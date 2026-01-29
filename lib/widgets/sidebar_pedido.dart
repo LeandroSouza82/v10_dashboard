@@ -1,10 +1,11 @@
+// ignore_for_file: unnecessary_underscores
 import 'package:flutter/material.dart';
 import '../models/entrega.dart';
 import '../services/supabase_service.dart';
+import '../services/rota_service.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import '../core/constants/api_keys.dart';
-import '../core/app_state.dart';
 import 'painel_mapa.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
@@ -25,6 +26,7 @@ class _SidebarPedidoState extends State<SidebarPedido> {
   double? _lat;
   double? _lng;
   bool _enviando = false;
+  List<Entrega> pedidosPendentes = [];
 
   @override
   void dispose() {
@@ -39,17 +41,24 @@ class _SidebarPedidoState extends State<SidebarPedido> {
 
     setState(() => _enviando = true);
     try {
-      // tentar geocoding se endereço preenchido
+      // tentar geocoding se endereço preenchido - obrigatório antes do envio
       if ((_enderecoController.text).trim().isNotEmpty) {
-        try {
-          final coords = await _geocodeAddress(_enderecoController.text.trim());
-          if (coords != null) {
-            _lat = coords['lat'];
-            _lng = coords['lng'];
+        final coords = await _geocodeAddress(_enderecoController.text.trim());
+        if (coords == null) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text(
+                  'Erro: Não localizamos este endereço no mapa. A entrega não foi salva.',
+                ),
+              ),
+            );
           }
-        } catch (_) {
-          // falha no geocoding não bloqueia o salvamento
+          return;
         }
+        // garantir doubles
+        _lat = (coords['lat'] as double);
+        _lng = (coords['lng'] as double);
       }
       final entrega = Entrega(
         id: DateTime.now().millisecondsSinceEpoch.toString(),
@@ -58,7 +67,9 @@ class _SidebarPedidoState extends State<SidebarPedido> {
         cidade: '',
         status: 'pendente',
         motoristaId: null,
-        obs: _obsController.text.trim().isEmpty ? null : _obsController.text.trim(),
+        obs: _obsController.text.trim().isEmpty
+            ? null
+            : _obsController.text.trim(),
         tipo: _tipoServico,
         assinaturaUrl: null,
         motivoNaoEntrega: null,
@@ -78,8 +89,12 @@ class _SidebarPedidoState extends State<SidebarPedido> {
           final marker = Marker(
             markerId: MarkerId(markerId),
             position: LatLng(markerLat, markerLng),
-            infoWindow: InfoWindow(title: saved.cliente.isNotEmpty ? saved.cliente : 'Pedido'),
-            icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueOrange),
+            infoWindow: InfoWindow(
+              title: saved.cliente.isNotEmpty ? saved.cliente : 'Pedido',
+            ),
+            icon: BitmapDescriptor.defaultMarkerWithHue(
+              BitmapDescriptor.hueOrange,
+            ),
           );
           PainelMapa.globalKey.currentState?.addDeliveryMarker(marker);
         } catch (_) {
@@ -88,13 +103,22 @@ class _SidebarPedidoState extends State<SidebarPedido> {
       }
       if (!mounted) return;
       _formKey.currentState!.reset();
+      _nomeController.clear();
+      _enderecoController.clear();
+      _obsController.clear();
+      _lat = null;
+      _lng = null;
       setState(() {
         _tipoServico = 'entrega';
       });
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Entrega salva como pendente')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Entrega salva como pendente')),
+      );
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Erro: $e')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Erro: $e')));
       }
     } finally {
       setState(() => _enviando = false);
@@ -111,12 +135,16 @@ class _SidebarPedidoState extends State<SidebarPedido> {
     if (resp.statusCode != 200) return null;
     try {
       final body = resp.body;
-      final json = body.isNotEmpty ? jsonDecode(body) as Map<String, dynamic> : null;
+      final json = body.isNotEmpty
+          ? jsonDecode(body) as Map<String, dynamic>
+          : null;
       if (json == null) return null;
       if ((json['status'] as String?) != 'OK') return null;
       final results = json['results'] as List<dynamic>?;
       if (results == null || results.isEmpty) return null;
-      final location = (results.first['geometry'] as Map<String, dynamic>)['location'] as Map<String, dynamic>;
+      final location =
+          (results.first['geometry'] as Map<String, dynamic>)['location']
+              as Map<String, dynamic>;
       final lat = (location['lat'] as num).toDouble();
       final lng = (location['lng'] as num).toDouble();
       return {'lat': lat, 'lng': lng};
@@ -131,112 +159,487 @@ class _SidebarPedidoState extends State<SidebarPedido> {
       child: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(16.0),
-          child: SingleChildScrollView(
-              child: Form(
-                key: _formKey,
-                child: Padding(
-                padding: const EdgeInsets.only(top: 60.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const SizedBox(height: 25.0),
+          child: Column(
+            children: [
+              // Form scrollable area
+              Flexible(
+                flex: 0,
+                child: SingleChildScrollView(
+                  child: Form(
+                    key: _formKey,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Novo Pedido',
+                          style: TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.blueGrey,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
 
-                    // Logo da empresa (dinâmico)
-                    Center(
-                      child: CircleAvatar(
-                        radius: 30,
-                        backgroundColor: Colors.transparent,
-                        child: AppState.instance.urlLogoEmpresa != null
-                            ? ClipOval(
-                                child: Image.network(
-                                  AppState.instance.urlLogoEmpresa!,
-                                  width: 60,
-                                  height: 60,
-                                  fit: BoxFit.cover,
-                                  errorBuilder: (_, __, ___) => const Icon(Icons.business, size: 36),
-                                ),
-                              )
-                            : const Icon(Icons.business, size: 36),
-                      ),
+                        DropdownButtonFormField<String>(
+                          initialValue: _tipoServico,
+                          items: const [
+                            DropdownMenuItem(
+                              value: 'entrega',
+                              child: Text('Entrega'),
+                            ),
+                            DropdownMenuItem(
+                              value: 'retirada',
+                              child: Text('Retirada'),
+                            ),
+                            DropdownMenuItem(
+                              value: 'outros',
+                              child: Text('Outros'),
+                            ),
+                          ],
+                          onChanged: (v) =>
+                              setState(() => _tipoServico = v ?? 'entrega'),
+                          decoration: InputDecoration(
+                            labelText: 'Tipo de Serviço',
+                            isDense: true,
+                            contentPadding: const EdgeInsets.symmetric(
+                              vertical: 12.0,
+                              horizontal: 12.0,
+                            ),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 20),
+
+                        // Nome do cliente
+                        TextFormField(
+                          controller: _nomeController,
+                          decoration: InputDecoration(
+                            labelText: 'Nome do cliente',
+                            isDense: true,
+                            contentPadding: const EdgeInsets.symmetric(
+                              vertical: 12.0,
+                              horizontal: 12.0,
+                            ),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          validator: (v) => (v == null || v.trim().isEmpty)
+                              ? 'Nome obrigatório'
+                              : null,
+                        ),
+                        const SizedBox(height: 20),
+
+                        // Endereço
+                        TextFormField(
+                          controller: _enderecoController,
+                          decoration: InputDecoration(
+                            labelText: 'Endereço',
+                            isDense: true,
+                            contentPadding: const EdgeInsets.symmetric(
+                              vertical: 12.0,
+                              horizontal: 12.0,
+                            ),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          maxLines: 2,
+                          validator: (v) => (v == null || v.trim().isEmpty)
+                              ? 'Endereço obrigatório'
+                              : null,
+                        ),
+                        const SizedBox(height: 20),
+
+                        // Observações
+                        TextFormField(
+                          controller: _obsController,
+                          decoration: InputDecoration(
+                            labelText: 'Observações',
+                            isDense: true,
+                            contentPadding: const EdgeInsets.symmetric(
+                              vertical: 12.0,
+                              horizontal: 12.0,
+                            ),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          maxLines: 3,
+                        ),
+                        const SizedBox(height: 20),
+
+                        ElevatedButton(
+                          onPressed: _enviando ? null : _enviar,
+                          child: _enviando
+                              ? const SizedBox(
+                                  height: 16,
+                                  width: 16,
+                                  child: CircularProgressIndicator(),
+                                )
+                              : const Text('Salvar (Fila)'),
+                        ),
+                      ],
                     ),
-                    const SizedBox(height: 12),
-
-                    const Text('Novo Pedido', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.blueGrey)),
-                    const SizedBox(height: 12),
-
-                    DropdownButtonFormField<String>(
-                        initialValue: _tipoServico,
-                        items: const [
-                          DropdownMenuItem(value: 'entrega', child: Text('Entrega')),
-                          DropdownMenuItem(value: 'retirada', child: Text('Retirada')),
-                          DropdownMenuItem(value: 'outros', child: Text('Outros')),
-                        ],
-                        onChanged: (v) => setState(() => _tipoServico = v ?? 'entrega'),
-                        decoration: InputDecoration(
-                          labelText: 'Tipo de Serviço',
-                          isDense: true,
-                          contentPadding: const EdgeInsets.symmetric(vertical: 12.0, horizontal: 12.0),
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                        ),
-                      ),
-                      const SizedBox(height: 20),
-
-                      // Nome do cliente
-                      TextFormField(
-                        controller: _nomeController,
-                        decoration: InputDecoration(
-                          labelText: 'Nome do cliente',
-                          isDense: true,
-                          contentPadding: const EdgeInsets.symmetric(vertical: 12.0, horizontal: 12.0),
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                        ),
-                        validator: (v) => (v == null || v.trim().isEmpty) ? 'Nome obrigatório' : null,
-                      ),
-                      const SizedBox(height: 20),
-
-                      // Endereço
-                      TextFormField(
-                        controller: _enderecoController,
-                        decoration: InputDecoration(
-                          labelText: 'Endereço',
-                          isDense: true,
-                          contentPadding: const EdgeInsets.symmetric(vertical: 12.0, horizontal: 12.0),
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                        ),
-                        maxLines: 2,
-                        validator: (v) => (v == null || v.trim().isEmpty) ? 'Endereço obrigatório' : null,
-                      ),
-                      const SizedBox(height: 20),
-
-                      // Ordem de campos: Tipo, Nome, Endereço, Observações
-
-                      // Observações
-                      TextFormField(
-                        controller: _obsController,
-                        decoration: InputDecoration(
-                          labelText: 'Observações',
-                          isDense: true,
-                          contentPadding: const EdgeInsets.symmetric(vertical: 12.0, horizontal: 12.0),
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                        ),
-                        maxLines: 3,
-                      ),
-                      const SizedBox(height: 20),
-
-                      ElevatedButton(
-                        onPressed: _enviando ? null : _enviar,
-                        child: _enviando
-                            ? const SizedBox(height: 16, width: 16, child: CircularProgressIndicator())
-                            : const Text('Salvar (Fila)'),
-                      ),
-                    ],
                   ),
                 ),
               ),
+
+              const SizedBox(height: 12),
+
+              // Lista de pedidos (expand)
+              Expanded(
+                child: StreamBuilder<List<Entrega>>(
+                  stream: SupabaseService.instance.streamEntregas(),
+                  builder: (context, snapshot) {
+                    final todas = snapshot.data ?? [];
+                    final entregas = todas
+                        .where((e) => e.status == 'pendente')
+                        .toList();
+                    pedidosPendentes = entregas;
+                    if (entregas.isEmpty) {
+                      return const Center(
+                        child: Text('Nenhuma entrega pendente'),
+                      );
+                    }
+                    return ListView.builder(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 0,
+                        vertical: 8,
+                      ),
+                      itemCount: entregas.length,
+                      itemBuilder: (context, index) {
+                        final e = entregas[index];
+                        final t = e.tipo.toLowerCase();
+                        final borderColor = t.contains('entrega')
+                            ? Colors.blue.shade300
+                            : (t.contains('retira') ||
+                                  t.contains('coleta') ||
+                                  t.contains('retirada'))
+                            ? Colors.orange.shade300
+                            : Colors.purple.shade200;
+
+                        return Card(
+                          elevation: 4,
+                          margin: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 8,
+                          ),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Container(
+                            decoration: BoxDecoration(
+                              border: Border(
+                                left: BorderSide(width: 6, color: borderColor),
+                              ),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Padding(
+                              padding: const EdgeInsets.all(12.0),
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  CircleAvatar(
+                                    radius: 20,
+                                    backgroundColor: borderColor,
+                                    child: const Icon(
+                                      Icons.local_shipping,
+                                      color: Colors.white,
+                                      size: 20,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          e.cliente,
+                                          style: Theme.of(
+                                            context,
+                                          ).textTheme.titleMedium,
+                                        ),
+                                        const SizedBox(height: 6),
+                                        Text(
+                                          e.endereco,
+                                          style: Theme.of(
+                                            context,
+                                          ).textTheme.bodySmall,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  IconButton(
+                                    icon: const Icon(
+                                      Icons.delete_outline,
+                                      color: Colors.redAccent,
+                                    ),
+                                    onPressed: () async {
+                                      final confirm = await showDialog<bool>(
+                                        context: context,
+                                        builder: (ctx) => AlertDialog(
+                                          title: const Text('Confirmação'),
+                                          content: const Text(
+                                            'Deseja excluir este pedido?',
+                                          ),
+                                          actions: [
+                                            TextButton(
+                                              onPressed: () =>
+                                                  Navigator.of(ctx).pop(false),
+                                              child: const Text('Não'),
+                                            ),
+                                            TextButton(
+                                              onPressed: () =>
+                                                  Navigator.of(ctx).pop(true),
+                                              child: const Text('Sim'),
+                                            ),
+                                          ],
+                                        ),
+                                      );
+                                      if (confirm != true) return;
+                                      try {
+                                        await SupabaseService.instance
+                                            .excluirEntrega(e.id);
+                                        if (!mounted) return;
+                                        WidgetsBinding.instance
+                                            .addPostFrameCallback((_) {
+                                              if (!mounted) return;
+                                              ScaffoldMessenger.of(
+                                                context,
+                                              ).showSnackBar(
+                                                const SnackBar(
+                                                  content: Text(
+                                                    'Pedido excluído',
+                                                  ),
+                                                ),
+                                              );
+                                            });
+                                      } catch (err) {
+                                        if (!mounted) return;
+                                        WidgetsBinding.instance
+                                            .addPostFrameCallback((_) {
+                                              if (!mounted) return;
+                                              ScaffoldMessenger.of(
+                                                context,
+                                              ).showSnackBar(
+                                                SnackBar(
+                                                  content: Text(
+                                                    'Erro ao excluir: $err',
+                                                  ),
+                                                ),
+                                              );
+                                            });
+                                      }
+                                    },
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    );
+                  },
+                ),
+              ),
+
+              // Botões finais: único botão que organiza e envia
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 8,
+                ),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: () async {
+                      showDialog<void>(
+                        context: context,
+                        barrierDismissible: false,
+                        builder: (c) =>
+                            const Center(child: CircularProgressIndicator()),
+                      );
+                      try {
+                        final entregas = await SupabaseService.instance
+                            .buscarEntregasPendentes();
+                        if (!mounted) return;
+
+                        final base =
+                            PainelMapa
+                                .globalKey
+                                .currentState
+                                ?.empresaLocation ??
+                            const LatLng(-27.4946, -48.6577);
+                        final rota = RotaService().calcularRotaOtimizada(
+                          base,
+                          entregas,
+                        );
+
+                        for (var i = 0; i < rota.length; i++) {
+                          final e = rota[i];
+                          final lat = e.lat;
+                          final lng = e.lng;
+                          if (lat == null || lng == null) continue;
+                          final marker = Marker(
+                            markerId: MarkerId('pedido_${e.id}'),
+                            position: LatLng(lat, lng),
+                            infoWindow: InfoWindow(
+                              title: '${i + 1}. ${e.endereco}',
+                            ),
+                            icon: BitmapDescriptor.defaultMarkerWithHue(
+                              BitmapDescriptor.hueOrange,
+                            ),
+                          );
+                          PainelMapa.globalKey.currentState?.addDeliveryMarker(
+                            marker,
+                          );
+                        }
+
+                        final motoristas = await SupabaseService.instance
+                            .buscarMotoristas();
+                        if (!mounted) return;
+
+                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                          if (!mounted) return;
+                          Navigator.of(context).pop();
+
+                          showModalBottomSheet<void>(
+                            context: context,
+                            builder: (ctx) {
+                              return ListView.builder(
+                                itemCount: motoristas.length,
+                                itemBuilder: (c, i) {
+                                  final m = motoristas[i];
+                                  final online = m.estaOnline;
+                                  final avatar =
+                                      (m.avatarPath?.isNotEmpty ?? false)
+                                      ? CircleAvatar(
+                                          backgroundImage: NetworkImage(
+                                            m.avatarPath!,
+                                          ),
+                                        )
+                                      : CircleAvatar(
+                                          child: Text(
+                                            m.nome.isNotEmpty ? m.nome[0] : '?',
+                                          ),
+                                        );
+                                  return ListTile(
+                                    leading: Stack(
+                                      alignment: Alignment.bottomRight,
+                                      children: [
+                                        avatar,
+                                        Container(
+                                          width: 10,
+                                          height: 10,
+                                          decoration: BoxDecoration(
+                                            color: online
+                                                ? Colors.green
+                                                : Colors.grey,
+                                            shape: BoxShape.circle,
+                                            border: Border.all(
+                                              color: Colors.white,
+                                              width: 1.5,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    title: Text(
+                                      '${m.nome}${m.sobrenome != null ? ' ${m.sobrenome}' : ''}',
+                                    ),
+                                    subtitle: Text(m.placaVeiculo),
+                                    onTap: () async {
+                                      Navigator.of(ctx).pop();
+                                      showDialog<void>(
+                                        context: context,
+                                        barrierDismissible: false,
+                                        builder: (c) => const Center(
+                                          child: CircularProgressIndicator(),
+                                        ),
+                                      );
+                                      try {
+                                        await SupabaseService.instance
+                                            .criarRota(m.id, rota);
+                                        // sucesso: limpar lista local de pendentes, limpar formulário e resetar UI
+                                        if (!mounted) return;
+                                        setState(() {
+                                          pedidosPendentes.clear();
+                                          _nomeController.clear();
+                                          _enderecoController.clear();
+                                          _obsController.clear();
+                                          _tipoServico = 'entrega';
+                                        });
+                                        // Reset completo do mapa (remove marcadores/polylines)
+                                        PainelMapa.globalKey.currentState
+                                            ?.clearAllMarkers();
+                                        WidgetsBinding.instance
+                                            .addPostFrameCallback((_) {
+                                              if (!mounted) return;
+                                              Navigator.of(context).pop();
+                                              ScaffoldMessenger.of(
+                                                context,
+                                              ).showSnackBar(
+                                                SnackBar(
+                                                  content: Text(
+                                                    'Rota enviada para ${m.nome}!',
+                                                  ),
+                                                ),
+                                              );
+                                            });
+                                      } catch (err) {
+                                        if (!mounted) return;
+                                        WidgetsBinding.instance
+                                            .addPostFrameCallback((_) {
+                                              if (!mounted) return;
+                                              Navigator.of(context).pop();
+                                              ScaffoldMessenger.of(
+                                                context,
+                                              ).showSnackBar(
+                                                SnackBar(
+                                                  content: Text(
+                                                    'Erro ao enviar rota: $err',
+                                                  ),
+                                                ),
+                                              );
+                                            });
+                                      }
+                                    },
+                                  );
+                                },
+                              );
+                            },
+                          );
+                        });
+                      } catch (e) {
+                        if (mounted) {
+                          WidgetsBinding.instance.addPostFrameCallback((_) {
+                            if (!mounted) return;
+                            Navigator.of(context).pop();
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  'Erro ao organizar/enviar rota: $e',
+                                ),
+                              ),
+                            );
+                          });
+                        }
+                      }
+                    },
+                    icon: const Icon(Icons.send_and_archive),
+                    label: const Text('Organizar e Enviar Rota'),
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       ),
     );
   }
 }
-

@@ -1,4 +1,6 @@
+// ignore_for_file: unnecessary_cast, unused_element, no_leading_underscores_for_local_identifiers, curly_braces_in_flow_control_structures
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' show min;
 import 'package:flutter/foundation.dart';
 
@@ -89,7 +91,9 @@ class SupabaseService {
                   controller.add(models);
                   retrySeconds = 1; // reset backoff on success
                 } catch (e, st) {
-                  debugPrint('Erro no SupabaseService (streamMotoristasOnline): $e');
+                  debugPrint(
+                    'Erro no SupabaseService (streamMotoristasOnline): $e',
+                  );
                   controller.addError(e, st);
                 }
               },
@@ -188,7 +192,13 @@ class SupabaseService {
       if (map == null) throw Exception('Erro ao criar entrega');
       return Entrega.fromJson(map);
     } catch (e) {
-      debugPrint('Erro no SupabaseService (enviarEntrega): $e');
+      // Try to provide more detailed info for 400/column errors
+      try {
+        debugPrint('Erro no SupabaseService (enviarEntrega): ${e.toString()}');
+        final payload = Map<String, dynamic>.from(entrega.toJson())
+          ..remove('id');
+        debugPrint('Payload enviado: ${payload.keys.toList()}');
+      } catch (_) {}
       rethrow;
     }
   }
@@ -291,6 +301,86 @@ class SupabaseService {
       return list.map((e) => Entrega.fromJson(e)).toList();
     } catch (e) {
       debugPrint('Erro no SupabaseService (buscarEntregasPendentes): $e');
+      rethrow;
+    }
+  }
+
+  Future<List<Motorista>> buscarMotoristas() async {
+    try {
+      final data = await _supabase.from('motoristas').select();
+      final list = _toMapList(data);
+      return list.map((e) => Motorista.fromJson(e)).toList();
+    } catch (e) {
+      debugPrint('Erro no SupabaseService (buscarMotoristas): $e');
+      rethrow;
+    }
+  }
+
+  /// Cria uma rota agrupando entregas para um motorista.
+  /// Insere um registro na tabela `rotas` com o motorista e ids das entregas.
+  Future<void> criarRota(String motoristaId, List<Entrega> entregas) async {
+    try {
+      dynamic parsedMotorista = _parseId(motoristaId);
+      if (parsedMotorista is String) {
+        final asInt = int.tryParse(parsedMotorista);
+        if (asInt != null) parsedMotorista = asInt;
+      }
+      if (parsedMotorista is! int) {
+        // Try one more parse attempt or throw
+        final tryParse = int.tryParse(motoristaId);
+        if (tryParse != null) {
+          parsedMotorista = tryParse;
+        } else {
+          throw Exception('motorista_id não é um inteiro válido: $motoristaId');
+        }
+      }
+
+      final entregaIds = entregas
+          .map((e) => int.tryParse(e.id) ?? e.id)
+          .toList();
+      final payload = {
+        'motorista_id': parsedMotorista,
+        // persistimos o array como string JSON para compatibilidade com schemas existentes
+        'entregas': jsonEncode(entregaIds),
+        'status': 'ativa',
+        'created_at': DateTime.now().toIso8601String(),
+      };
+      await _supabase.from('rotas').insert(payload);
+
+      // Após criar rota, atualizar status das entregas para 'em_rota' em massa
+      try {
+        // Use filter with 'in' operator to update multiple ids in one call
+        final idsParam = '(${entregaIds.map((e) => e.toString()).join(',')})';
+        await _supabase
+            .from('entregas')
+            .update({'status': 'em_rota'})
+            .filter('id', 'in', idsParam);
+      } catch (err) {
+        debugPrint(
+          'Aviso: falha ao atualizar status em massa das entregas: $err',
+        );
+        // fallback: tentar atualizar individualmente
+        for (final e in entregas) {
+          try {
+            await atualizarStatusEntrega(e.id, 'em_rota');
+          } catch (err2) {
+            debugPrint(
+              'Aviso: não foi possível atualizar status da entrega ${e.id}: $err2',
+            );
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Erro no SupabaseService (criarRota): $e');
+      rethrow;
+    }
+  }
+
+  Future<void> excluirEntrega(String entregaId) async {
+    try {
+      await _supabase.from('entregas').delete().eq('id', int.parse(entregaId));
+    } catch (e) {
+      debugPrint('Erro no SupabaseService (excluirEntrega): $e');
       rethrow;
     }
   }

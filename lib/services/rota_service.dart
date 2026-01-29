@@ -7,9 +7,14 @@ import '../models/entrega.dart';
 class RotaService {
   /// Calcula a rota otimizada usando o algoritmo Vizinho Mais Próximo (Nearest Neighbor).
   /// Retorna uma nova lista ordenada de entregas sem alterar a lista original.
-  List<Entrega> calcularRotaOtimizada(LatLng pontoInicial, List<Entrega> entregas) {
+  List<Entrega> calcularRotaOtimizada(
+    LatLng pontoInicial,
+    List<Entrega> entregas,
+  ) {
     // Trabalhar sobre uma cópia filtrada (remover entregas sem coordenadas)
-    final candidates = entregas.where((e) => e.lat != null && e.lng != null).toList();
+    final candidates = entregas
+        .where((e) => e.lat != null && e.lng != null)
+        .toList();
     final remaining = List<Entrega>.from(candidates);
     final result = <Entrega>[];
 
@@ -19,10 +24,20 @@ class RotaService {
     while (remaining.isNotEmpty) {
       // encontra o índice do mais próximo do ponto atual
       var bestIndex = 0;
-      var bestDist = _haversineKm(currentLat, currentLng, remaining[0].lat!, remaining[0].lng!);
+      var bestDist = _haversineKm(
+        currentLat,
+        currentLng,
+        remaining[0].lat!,
+        remaining[0].lng!,
+      );
 
       for (var i = 1; i < remaining.length; i++) {
-        final d = _haversineKm(currentLat, currentLng, remaining[i].lat!, remaining[i].lng!);
+        final d = _haversineKm(
+          currentLat,
+          currentLng,
+          remaining[i].lat!,
+          remaining[i].lng!,
+        );
         if (d < bestDist) {
           bestDist = d;
           bestIndex = i;
@@ -44,7 +59,8 @@ class RotaService {
     const r = 6371.0; // Earth radius in km
     final dLat = _toRad(lat2 - lat1);
     final dLon = _toRad(lon2 - lon1);
-    final a = sin(dLat / 2) * sin(dLat / 2) +
+    final a =
+        sin(dLat / 2) * sin(dLat / 2) +
         cos(_toRad(lat1)) * cos(_toRad(lat2)) * sin(dLon / 2) * sin(dLon / 2);
     final c = 2 * atan2(sqrt(a), sqrt(1 - a));
     return r * c;

@@ -1,19 +1,20 @@
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import '../core/app_state.dart';
 import 'package:http/http.dart' as http;
+import '../core/app_state.dart';
 import '../models/motorista.dart';
-import '../services/supabase_service.dart';
 import '../models/entrega.dart';
+import '../services/supabase_service.dart';
 
 class PainelMapa extends StatefulWidget {
-  static final GlobalKey<PainelMapaState> globalKey = GlobalKey<PainelMapaState>();
+  static final GlobalKey<PainelMapaState> globalKey =
+      GlobalKey<PainelMapaState>();
 
   PainelMapa({Key? key}) : super(key: key ?? globalKey);
 
@@ -23,12 +24,23 @@ class PainelMapa extends StatefulWidget {
 
 class PainelMapaState extends State<PainelMapa> {
   final Completer<GoogleMapController> _controller = Completer();
-  final Set<Marker> _markers = {};
+
+  final Set<Marker> _markers = <Marker>{};
+  final Set<Marker> _motoristaMarkers = <Marker>{};
+  final Set<Marker> _entregaMarkers = <Marker>{};
+
+  StreamSubscription<List<Motorista>>? _motoristaSub;
+  StreamSubscription<List<Entrega>>? _entregasSub;
+
   LatLng? _posicaoEmpresa;
   static const CameraPosition _posicaoInicial = CameraPosition(
     target: LatLng(-27.4946, -48.6577),
     zoom: 15.0,
   );
+
+  BitmapDescriptor? _companyIcon;
+  DateTime? _lastCameraAdjust;
+  bool _initialPositionAcquired = false;
 
   @override
   void initState() {
@@ -36,71 +48,94 @@ class PainelMapaState extends State<PainelMapa> {
     _initialize();
   }
 
-  bool _initialPositionAcquired = false;
-
   Future<void> _initialize() async {
     await _preloadCompanyIcon();
     final got = await _trySetEmpresaFromGps();
-    if (!got) {
-      await _loadEmpresaFromPrefs();
-    }
+    if (!got) await _loadEmpresaFromPrefs();
     _listenMotoristas();
-    setState(() {
-      _initialPositionAcquired = true;
-    });
-    // Ensure base marker is present once after initial position
-    if (_posicaoEmpresa != null && !_markers.any((m) => m.markerId.value == 'base_empresa')) {
-      setState(() {
-        _markers.add(_companyMarker());
-      });
+    _listenEntregas();
+    setState(() => _initialPositionAcquired = true);
+
+    if (_posicaoEmpresa != null &&
+        !_markers.any((m) => m.markerId.value == 'base_empresa')) {
+      _markers.add(_companyMarker());
     }
   }
-
-  StreamSubscription<List<Motorista>>? _motoristaSub;
 
   void _listenMotoristas() {
-    _motoristaSub = SupabaseService.instance.streamMotoristasOnline().listen(
-      (list) {
-        final newMarkers = <Marker>{};
-        for (final m in list) {
-          final lat = m.latitude;
-          final lng = m.longitude;
-          if (lat == null || lng == null) continue;
-          newMarkers.add(
-            Marker(
-              markerId: MarkerId(m.id),
-              position: LatLng(lat, lng),
-              infoWindow: InfoWindow(title: m.nome),
-            ),
-          );
-        }
-        // Preserve company marker if defined
-        if (_posicaoEmpresa != null) {
-          newMarkers.add(_companyMarker());
-        }
-        // update markers set (motorista updates should NOT auto-adjust camera)
-        setState(() {
-          _markers
-            ..clear()
-            ..addAll(newMarkers);
-        });
-      },
-      onError: (e) {
-        // ignore errors for now; reconnection is handled by the service
-      },
-    );
+    _motoristaSub = SupabaseService.instance.streamMotoristasOnline().listen((
+      list,
+    ) {
+      final newMarkers = <Marker>{};
+      for (final m in list) {
+        final lat = m.latitude;
+        final lng = m.longitude;
+        if (lat == null || lng == null) continue;
+        newMarkers.add(
+          Marker(
+            markerId: MarkerId('motorista_${m.id}'),
+            position: LatLng(lat, lng),
+            infoWindow: InfoWindow(title: m.nome),
+          ),
+        );
+      }
+      setState(() {
+        _motoristaMarkers
+          ..clear()
+          ..addAll(newMarkers);
+        _rebuildMarkers();
+      });
+    }, onError: (_) {});
   }
 
-  // demo markers removed
+  void _listenEntregas() {
+    _entregasSub = SupabaseService.instance.streamEntregas().listen((list) {
+      final newMarkers = <Marker>{};
+      for (final e in list) {
+        if (e.lat == null || e.lng == null) continue;
+        final hue = (e.status == 'pendente')
+            ? BitmapDescriptor.hueOrange
+            : (e.status == 'em_rota')
+            ? BitmapDescriptor.hueViolet
+            : BitmapDescriptor.hueBlue;
+        newMarkers.add(
+          Marker(
+            markerId: MarkerId('pedido_${e.id}'),
+            position: LatLng(e.lat!, e.lng!),
+            infoWindow: InfoWindow(
+              title: e.cliente.isNotEmpty ? e.cliente : e.endereco,
+            ),
+            icon: BitmapDescriptor.defaultMarkerWithHue(hue),
+          ),
+        );
+      }
+      setState(() {
+        _entregaMarkers
+          ..clear()
+          ..addAll(newMarkers);
+        _rebuildMarkers();
+      });
+    }, onError: (_) {});
+  }
+
+  void _rebuildMarkers() {
+    _markers
+      ..clear()
+      ..addAll(_motoristaMarkers)
+      ..addAll(_entregaMarkers);
+    if (_posicaoEmpresa != null) _markers.add(_companyMarker());
+  }
 
   Marker _companyMarker() {
     final id = 'base_empresa';
-    final pos = _posicaoEmpresa!;
+    final pos = _posicaoEmpresa ?? _posicaoInicial.target;
     return Marker(
       markerId: MarkerId(id),
       position: pos,
       infoWindow: const InfoWindow(title: 'Minha Empresa / Base'),
-      icon: _companyIcon ?? BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+      icon:
+          _companyIcon ??
+          BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
     );
   }
 
@@ -108,10 +143,7 @@ class PainelMapaState extends State<PainelMapa> {
     final prefs = await SharedPreferences.getInstance();
     final lat = prefs.getDouble('empresa_lat');
     final lng = prefs.getDouble('empresa_lng');
-    if (lat != null && lng != null) {
-      _posicaoEmpresa = LatLng(lat, lng);
-    }
-    // tentar pré-carregar ícone do logo da empresa
+    if (lat != null && lng != null) _posicaoEmpresa = LatLng(lat, lng);
     await _preloadCompanyIcon();
   }
 
@@ -126,13 +158,14 @@ class PainelMapaState extends State<PainelMapa> {
     if (got) {
       await _preloadCompanyIcon();
       setState(() {
-        _markers.add(_companyMarker());
+        if (_posicaoEmpresa != null &&
+            !_markers.any((m) => m.markerId.value == 'base_empresa')) {
+          _markers.add(_companyMarker());
+        }
       });
+      _ajustarVisaoGlobal();
     }
   }
-
-  BitmapDescriptor? _companyIcon;
-  DateTime? _lastCameraAdjust;
 
   Future<bool> _trySetEmpresaFromGps() async {
     try {
@@ -143,16 +176,14 @@ class PainelMapaState extends State<PainelMapa> {
       }
       if (permission == LocationPermission.deniedForever) return false;
 
-      final pos = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
+      final pos = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
       final latlng = LatLng(pos.latitude, pos.longitude);
       _posicaoEmpresa = latlng;
-      // Debug: confirmar captura de GPS no console
-      try {
-        debugPrint('GPS Capturado: $_posicaoEmpresa');
-      } catch (_) {}
       await _saveEmpresaToPrefs(latlng);
       return true;
-    } catch (e) {
+    } catch (_) {
       return false;
     }
   }
@@ -165,36 +196,23 @@ class PainelMapaState extends State<PainelMapa> {
       if (resp.statusCode == 200) {
         final bytes = resp.bodyBytes;
         if (bytes.isNotEmpty) {
-          // Optionally resize bytes for marker if needed
-          // Use new API BitmapDescriptor.bytes instead of deprecated fromBytes
           _companyIcon = BitmapDescriptor.bytes(Uint8List.fromList(bytes));
         }
       }
-    } catch (_) {
-      // ignore
-    }
+    } catch (_) {}
   }
 
-  /// Exposes company/base position publicly for other widgets.
   LatLng? get empresaLocation => _posicaoEmpresa;
 
-  /// Atualiza os marcadores de entrega para exibir uma numeração sequencial
-  /// conforme a ordem fornecida em [ordenadas].
   void numerarEntregas(List<Entrega> ordenadas) {
     if (ordenadas.isEmpty) return;
     final updated = <Marker>{};
-
-    // keep non-pedido markers as-is (e.g., motoristas, base)
     for (final m in _markers) {
-      if (!m.markerId.value.toLowerCase().startsWith('pedido')) {
-        updated.add(m);
-      }
+      if (!m.markerId.value.toLowerCase().startsWith('pedido')) updated.add(m);
     }
-
     for (var i = 0; i < ordenadas.length; i++) {
       final e = ordenadas[i];
       final id = 'pedido_${e.id}';
-      // find existing marker by id
       final existing = _markers.firstWhere(
         (m) => m.markerId.value == id,
         orElse: () => Marker(
@@ -203,14 +221,13 @@ class PainelMapaState extends State<PainelMapa> {
           infoWindow: InfoWindow(title: '${i + 1}. ${e.endereco}'),
         ),
       );
-
-      // rebuild marker with numbered title
       final numbered = existing.copyWith(
-        infoWindowParam: InfoWindow(title: '${i + 1}. ${existing.infoWindow.title ?? e.endereco}'),
+        infoWindowParam: InfoWindow(
+          title: '${i + 1}. ${existing.infoWindow.title ?? e.endereco}',
+        ),
       );
       updated.add(numbered);
     }
-
     setState(() {
       _markers
         ..clear()
@@ -235,28 +252,64 @@ class PainelMapaState extends State<PainelMapa> {
     });
     // throttle para evitar ajustes repetidos
     final now = DateTime.now();
-    if (_lastCameraAdjust == null || now.difference(_lastCameraAdjust!).inMilliseconds > 800) {
+    if (_lastCameraAdjust == null ||
+        now.difference(_lastCameraAdjust!).inMilliseconds > 800) {
       _lastCameraAdjust = now;
       _ajustarVisaoGlobal();
     }
   }
 
-  /// Ajusta a visão global do mapa incluindo: base do gestor, motoristas e pedidos
+  /// Força uma recarga pontual dos pinos de entrega (chamável a partir de Sidebar)
+  Future<void> reloadDeliveryPins() async {
+    try {
+      final entregas = await SupabaseService.instance.buscarEntregasPendentes();
+      final newMarkers = <Marker>{};
+      for (final e in entregas) {
+        if (e.lat == null || e.lng == null) continue;
+        newMarkers.add(
+          Marker(
+            markerId: MarkerId('pedido_${e.id}'),
+            position: LatLng(e.lat!, e.lng!),
+            infoWindow: InfoWindow(
+              title: e.cliente.isNotEmpty ? e.cliente : e.endereco,
+            ),
+            icon: BitmapDescriptor.defaultMarkerWithHue(
+              BitmapDescriptor.hueOrange,
+            ),
+          ),
+        );
+      }
+      setState(() {
+        _entregaMarkers
+          ..clear()
+          ..addAll(newMarkers);
+        _rebuildMarkers();
+      });
+    } catch (_) {}
+  }
+
+  /// Limpa todos os marcadores de motoristas/entregas e polylines do mapa,
+  /// deixando apenas o marcador da empresa (se houver).
+  void clearAllMarkers() {
+    setState(() {
+      _motoristaMarkers.clear();
+      _entregaMarkers.clear();
+      _markers.clear();
+      if (_posicaoEmpresa != null) _markers.add(_companyMarker());
+    });
+  }
+
   Future<void> _ajustarVisaoGlobal() async {
     try {
       if (!_controller.isCompleted) return;
       final controller = await _controller.future;
 
-      // Only adjust camera if there is at least one delivery marker
       final deliveryMarkers = _markers.where((m) {
         final id = m.markerId.value.toLowerCase();
-        return id.startsWith('pedido') || id.startsWith('entrega') || id.contains('pedido') || id.contains('entrega');
+        return id.startsWith('pedido') || id.contains('entrega');
       }).toList();
 
-      if (deliveryMarkers.isEmpty) {
-        // No deliveries -> keep camera static on base (do not animate)
-        return;
-      }
+      if (deliveryMarkers.isEmpty) return;
 
       final points = <LatLng>[];
       if (_posicaoEmpresa != null) points.add(_posicaoEmpresa!);
@@ -264,7 +317,6 @@ class PainelMapaState extends State<PainelMapa> {
         points.add(m.position);
       }
 
-      // remover duplicates
       final unique = <String, LatLng>{};
       for (final p in points) {
         unique['${p.latitude}_${p.longitude}'] = p;
@@ -272,11 +324,12 @@ class PainelMapaState extends State<PainelMapa> {
       final pts = unique.values.toList();
       if (pts.isEmpty) return;
       if (pts.length == 1) {
-        await controller.animateCamera(CameraUpdate.newLatLngZoom(pts.first, 15.0));
+        await controller.animateCamera(
+          CameraUpdate.newLatLngZoom(pts.first, 15.0),
+        );
         return;
       }
 
-      // Calculate span in meters to decide whether to use bounds or a fixed neighborhood zoom
       double minLat = pts.first.latitude;
       double maxLat = pts.first.latitude;
       double minLng = pts.first.longitude;
@@ -287,17 +340,24 @@ class PainelMapaState extends State<PainelMapa> {
         if (p.longitude < minLng) minLng = p.longitude;
         if (p.longitude > maxLng) maxLng = p.longitude;
       }
-      // approximate meters
       final meanLat = (minLat + maxLat) / 2.0;
       final latMeters = (maxLat - minLat).abs() * 111000.0;
-      final lngMeters = (maxLng - minLng).abs() * 111000.0 * math.cos(meanLat * math.pi / 180.0);
-      final spanMeters = math.sqrt(latMeters * latMeters + lngMeters * lngMeters);
-      // If span is small (e.g., < 1000m), use fixed neighborhood zoom centered on base
+      final lngMeters =
+          (maxLng - minLng).abs() *
+          111000.0 *
+          math.cos(meanLat * math.pi / 180.0);
+      final spanMeters = math.sqrt(
+        latMeters * latMeters + lngMeters * lngMeters,
+      );
       if (spanMeters < 1000) {
         if (_posicaoEmpresa != null) {
-          await controller.animateCamera(CameraUpdate.newLatLngZoom(_posicaoEmpresa!, 15.0));
+          await controller.animateCamera(
+            CameraUpdate.newLatLngZoom(_posicaoEmpresa!, 15.0),
+          );
         } else {
-          await controller.animateCamera(CameraUpdate.newLatLngZoom(pts.first, 15.0));
+          await controller.animateCamera(
+            CameraUpdate.newLatLngZoom(pts.first, 15.0),
+          );
         }
         return;
       }
@@ -306,10 +366,10 @@ class PainelMapaState extends State<PainelMapa> {
         southwest: LatLng(minLat, minLng),
         northeast: LatLng(maxLat, maxLng),
       );
-      await controller.animateCamera(CameraUpdate.newLatLngBounds(bounds, 70.0));
-    } catch (e) {
-      // Se falhar, não quebrar a UI — opcionalmente logar o erro
-    }
+      await controller.animateCamera(
+        CameraUpdate.newLatLngBounds(bounds, 70.0),
+      );
+    } catch (_) {}
   }
 
   @override
@@ -318,11 +378,13 @@ class PainelMapaState extends State<PainelMapa> {
       color: Theme.of(context).colorScheme.surface,
       child: Stack(
         children: [
-          // Renderizar o mapa apenas depois de termos a posição inicial do gestor
           if (_initialPositionAcquired && _posicaoEmpresa != null)
             GoogleMap(
               mapType: MapType.normal,
-              initialCameraPosition: CameraPosition(target: _posicaoEmpresa!, zoom: 15.0),
+              initialCameraPosition: CameraPosition(
+                target: _posicaoEmpresa!,
+                zoom: 15.0,
+              ),
               markers: _markers,
               myLocationEnabled: false,
               myLocationButtonEnabled: false,
@@ -332,14 +394,15 @@ class PainelMapaState extends State<PainelMapa> {
               },
             )
           else
-            // Placeholder até obtermos a posição do gestor
             const Center(child: CircularProgressIndicator()),
           Positioned(
             top: 12,
             right: 12,
             child: FloatingActionButton.small(
               heroTag: 'set_base',
-              onPressed: _setEmpresaToCurrentPosition,
+              onPressed: () async {
+                await _setEmpresaToCurrentPosition();
+              },
               tooltip: 'Definir base nesta posição',
               child: const Icon(Icons.home, color: Colors.white),
             ),
@@ -372,6 +435,7 @@ class PainelMapaState extends State<PainelMapa> {
   @override
   void dispose() {
     _motoristaSub?.cancel();
+    _entregasSub?.cancel();
     super.dispose();
   }
 }

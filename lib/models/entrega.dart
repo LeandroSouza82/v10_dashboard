@@ -91,7 +91,6 @@ class Entrega {
       'id': int.parse(id),
       'cliente': cliente,
       'endereco': endereco,
-      'tipo_servico': tipo,
       'cidade': cidade,
       'status': status,
       'motorista_id': motoristaId,

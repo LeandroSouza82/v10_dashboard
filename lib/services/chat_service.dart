@@ -1,3 +1,4 @@
+// ignore_for_file: unnecessary_type_check, dead_code
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 
@@ -34,14 +35,14 @@ class ChatService {
           .stream(primaryKey: ['id'])
           .listen((event) {
             try {
-              if (event == null) return;
-              final list = (event is List)
-                  ? event
-                        .map((e) => Map<String, dynamic>.from(e as Map))
-                        .toList()
-                  : <Map<String, dynamic>>[
-                      Map<String, dynamic>.from(event as Map),
-                    ];
+              final list = <Map<String, dynamic>>[];
+              if (event is List) {
+                for (final e in event) {
+                  list.add(Map<String, dynamic>.from(e as Map));
+                }
+              } else if (event is Map) {
+                list.add(Map<String, dynamic>.from(event as Map));
+              }
               final filtered = list
                   .where((e) => (e['motorista_id'] as String?) == motoristaId)
                   .toList();
