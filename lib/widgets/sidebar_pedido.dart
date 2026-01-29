@@ -565,31 +565,31 @@ class _SidebarPedidoState extends State<SidebarPedido> {
                                       try {
                                         await SupabaseService.instance
                                             .criarRota(m.id, rota);
-                                        // sucesso: limpar lista local de pendentes, limpar formulário e resetar UI
+                                        // Obrigatório: limpar lista local de pendentes e notificar UI
+                                        if (!mounted) return;
+                                        pedidosPendentes.clear();
+                                        setState(() {});
+                                        ScaffoldMessenger.of(context).showSnackBar(
+                                          const SnackBar(
+                                            content: Text('Rota enviada com sucesso!'),
+                                          ),
+                                        );
+                                        // Reset completo do mapa (remove marcadores/polylines)
+                                        PainelMapa.globalKey.currentState
+                                            ?.clearAllMarkers();
+
+                                        // Também limpar formulários e fechar modal
                                         if (!mounted) return;
                                         setState(() {
-                                          pedidosPendentes.clear();
                                           _nomeController.clear();
                                           _enderecoController.clear();
                                           _obsController.clear();
                                           _tipoServico = 'entrega';
                                         });
-                                        // Reset completo do mapa (remove marcadores/polylines)
-                                        PainelMapa.globalKey.currentState
-                                            ?.clearAllMarkers();
                                         WidgetsBinding.instance
                                             .addPostFrameCallback((_) {
                                               if (!mounted) return;
                                               Navigator.of(context).pop();
-                                              ScaffoldMessenger.of(
-                                                context,
-                                              ).showSnackBar(
-                                                SnackBar(
-                                                  content: Text(
-                                                    'Rota enviada para ${m.nome}!',
-                                                  ),
-                                                ),
-                                              );
                                             });
                                       } catch (err) {
                                         if (!mounted) return;

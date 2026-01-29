@@ -345,6 +345,8 @@ class SupabaseService {
         'status': 'ativa',
         'created_at': DateTime.now().toIso8601String(),
       };
+      // Confirmar: a coluna/field usada para guardar os ids das entregas é exatamente 'entregas'
+      assert(payload.keys.contains('entregas'));
       await _supabase.from('rotas').insert(payload);
 
       // Após criar rota, atualizar status das entregas para 'em_rota' em massa
