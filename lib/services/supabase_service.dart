@@ -203,6 +203,38 @@ class SupabaseService {
     }
   }
 
+  /// Diagnóstico: tenta inserir uma entrega de teste e imprime erros detalhados.
+  /// Use para verificar permissões/RLS do Supabase durante debug.
+  Future<void> diagnosticoInserirEntrega() async {
+    final now = DateTime.now().toIso8601String();
+    final testPayload = {
+      'cliente': 'TEST_DIAGNOSTICO',
+      'endereco': 'Rua Teste, 123',
+      'status': 'pendente',
+      'created_at': now,
+    };
+    try {
+      final resp = await _supabase
+          .from('entregas')
+          .insert(testPayload)
+          .select();
+      debugPrint('Diagnóstico Supabase: insert OK -> ${resp.toString()}');
+    } catch (e) {
+      // Printar erro completo para diagnóstico de RLS/permissões
+      debugPrint('Diagnóstico Supabase: falha ao inserir entrega de teste: $e');
+      // Tentar recuperar info do auth (se disponível) para diagnóstico
+      try {
+        debugPrint(
+          'Diagnóstico Supabase: currentUser=${_supabase.auth.currentUser}',
+        );
+        debugPrint(
+          'Diagnóstico Supabase: currentSession=${_supabase.auth.currentSession}',
+        );
+      } catch (_) {}
+      rethrow;
+    }
+  }
+
   Future<void> atualizarStatusEntrega(String entregaId, String status) async {
     try {
       await _supabase

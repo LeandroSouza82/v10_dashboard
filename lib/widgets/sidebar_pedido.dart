@@ -1,12 +1,12 @@
 // ignore_for_file: unnecessary_underscores
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import '../models/entrega.dart';
 import '../services/supabase_service.dart';
 import '../services/rota_service.dart';
 import 'dart:async';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
 import '../core/constants/api_keys.dart';
+import '../services/google_places.dart';
 import 'painel_mapa.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
@@ -42,6 +42,17 @@ class _SidebarPedidoState extends State<SidebarPedido> {
     super.dispose();
   }
 
+  @override
+  void initState() {
+    super.initState();
+    // Diagnostic: confirmar leitura da API key do config
+    try {
+      print('DEBUG: ApiKeys.googleMapsKey=${ApiKeys.googleMapsKey}');
+    } catch (e) {
+      print('DEBUG: falha ao ler ApiKeys.googleMapsKey: $e');
+    }
+  }
+
   Future<void> _enviar() async {
     if (!_formKey.currentState!.validate()) return;
 
@@ -51,7 +62,10 @@ class _SidebarPedidoState extends State<SidebarPedido> {
       if ((_enderecoController.text).trim().isNotEmpty) {
         // limpar endereço: colapsar traços múltiplos e espaços extras
         var addr = _enderecoController.text.trim();
-        addr = addr.replaceAll(RegExp(r'-{2,}'), '-').replaceAll(RegExp(r'\s{2,}'), ' ').trim();
+        addr = addr
+            .replaceAll(RegExp(r'-{2,}'), '-')
+            .replaceAll(RegExp(r'\s{2,}'), ' ')
+            .trim();
 
         // primeira tentativa
         var coords = await _geocodeAddress(addr);
@@ -136,29 +150,11 @@ class _SidebarPedidoState extends State<SidebarPedido> {
   }
 
   Future<Map<String, double>?> _geocodeAddress(String address) async {
-    final key = ApiKeys.googleMapsKey;
-    final uri = Uri.https('maps.googleapis.com', '/maps/api/geocode/json', {
-      'address': address,
-      'key': key,
-    });
-    final resp = await http.get(uri);
-    if (resp.statusCode != 200) return null;
     try {
-      final body = resp.body;
-      final json = body.isNotEmpty
-          ? jsonDecode(body) as Map<String, dynamic>
-          : null;
-      if (json == null) return null;
-      if ((json['status'] as String?) != 'OK') return null;
-      final results = json['results'] as List<dynamic>?;
-      if (results == null || results.isEmpty) return null;
-      final location =
-          (results.first['geometry'] as Map<String, dynamic>)['location']
-              as Map<String, dynamic>;
-      final lat = (location['lat'] as num).toDouble();
-      final lng = (location['lng'] as num).toDouble();
-      return {'lat': lat, 'lng': lng};
-    } catch (_) {
+      final key = ApiKeys.googleMapsKey;
+      return await geocodeAddress(address, key);
+    } catch (e) {
+      print('DEBUG: geocodeAddress error: $e');
       return null;
     }
   }
@@ -178,64 +174,38 @@ class _SidebarPedidoState extends State<SidebarPedido> {
   }
 
   Future<void> _fetchPlaceSuggestions(String input) async {
-    final key = ApiKeys.googleMapsKey;
-    final uri = Uri.https('maps.googleapis.com', '/maps/api/place/autocomplete/json', {
-      'input': input,
-      'key': key,
-      'components': 'country:br',
-    });
     try {
-      final resp = await http.get(uri);
-      if (resp.statusCode != 200) return;
-      final body = resp.body;
-      final jsonBody = body.isNotEmpty ? jsonDecode(body) as Map<String, dynamic> : null;
-      if (jsonBody == null) return;
-      final predictions = (jsonBody['predictions'] as List<dynamic>?) ?? [];
-      final list = <Map<String, String>>[];
-      for (final p in predictions) {
-        final pid = (p as Map<String, dynamic>)['place_id'] as String?;
-        final desc = p['description'] as String?;
-        if (pid != null && desc != null) list.add({'place_id': pid, 'description': desc});
-      }
+      final key = ApiKeys.googleMapsKey;
+      final list = await fetchPlaceSuggestions(input, key);
       setState(() {
         _placeSuggestions = list;
         _showPlaceSuggestions = list.isNotEmpty;
       });
-    } catch (_) {}
+    } catch (e) {
+      print('DEBUG: Places autocomplete exception: $e');
+    }
   }
 
   Future<void> _fetchPlaceDetails(String placeId) async {
-    final key = ApiKeys.googleMapsKey;
-    final uri = Uri.https('maps.googleapis.com', '/maps/api/place/details/json', {
-      'place_id': placeId,
-      'key': key,
-      'fields': 'formatted_address,geometry',
-    });
     try {
-      final resp = await http.get(uri);
-      if (resp.statusCode != 200) return;
-      final body = resp.body;
-      final jsonBody = body.isNotEmpty ? jsonDecode(body) as Map<String, dynamic> : null;
-      if (jsonBody == null) return;
-      final result = jsonBody['result'] as Map<String, dynamic>?;
-      if (result == null) return;
-      final formatted = result['formatted_address'] as String?;
-      final location = (result['geometry'] as Map<String, dynamic>?)?['location'] as Map<String, dynamic>?;
-      final lat = location != null ? (location['lat'] as num).toDouble() : null;
-      final lng = location != null ? (location['lng'] as num).toDouble() : null;
-      if (formatted != null) {
-        _enderecoController.text = formatted;
-      }
+      final key = ApiKeys.googleMapsKey;
+      final details = await fetchPlaceDetails(placeId, key);
+      if (details == null) return;
+      final formatted = details['formatted'] as String?;
+      final lat = details['lat'] as double?;
+      final lng = details['lng'] as double?;
+      if (formatted != null) _enderecoController.text = formatted;
       if (lat != null && lng != null) {
         _lat = lat;
         _lng = lng;
-        // coordenadas capturadas (via Places ou Geocode)
       }
       setState(() {
         _placeSuggestions = [];
         _showPlaceSuggestions = false;
       });
-    } catch (_) {}
+    } catch (e) {
+      print('DEBUG: Places details exception: $e');
+    }
   }
 
   @override
@@ -264,6 +234,27 @@ class _SidebarPedidoState extends State<SidebarPedido> {
                           ),
                         ),
                         const SizedBox(height: 12),
+                        // Debug controls
+                        if (kDebugMode)
+                          Row(
+                            children: [
+                              ElevatedButton(
+                                onPressed: () async {
+                                  try {
+                                    print('DEBUG: iniciando diagnostico de insercao no Supabase');
+                                    await SupabaseService.instance.diagnosticoInserirEntrega();
+                                    print('DEBUG: diagnostico de insercao finalizado');
+                                    if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Diagnóstico: tentativa de insert executada (veja console)')));
+                                  } catch (e) {
+                                    print('DEBUG: diagnostico insercao erro: $e');
+                                    if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Diagnóstico falhou: $e')));
+                                  }
+                                },
+                                child: const Text('Diagnóstico Supabase'),
+                              ),
+                              const SizedBox(width: 8),
+                            ],
+                          ),
 
                         DropdownButtonFormField<String>(
                           initialValue: _tipoServico,
@@ -340,16 +331,24 @@ class _SidebarPedidoState extends State<SidebarPedido> {
                                   : null,
                               onChanged: _onAddressChanged,
                             ),
-                            if (_showPlaceSuggestions && _placeSuggestions.isNotEmpty)
+                            if (_showPlaceSuggestions &&
+                                _placeSuggestions.isNotEmpty)
                               Container(
                                 margin: const EdgeInsets.only(top: 6.0),
-                                constraints: const BoxConstraints(maxHeight: 200),
+                                constraints: const BoxConstraints(
+                                  maxHeight: 200,
+                                ),
                                 decoration: BoxDecoration(
                                   color: Theme.of(context).cardColor,
                                   borderRadius: BorderRadius.circular(8),
                                   boxShadow: [
                                     BoxShadow(
-                                      color: const Color.fromRGBO(0, 0, 0, 0.08),
+                                      color: const Color.fromRGBO(
+                                        0,
+                                        0,
+                                        0,
+                                        0.08,
+                                      ),
                                       blurRadius: 6,
                                       offset: const Offset(0, 2),
                                     ),
@@ -359,7 +358,8 @@ class _SidebarPedidoState extends State<SidebarPedido> {
                                   shrinkWrap: true,
                                   padding: EdgeInsets.zero,
                                   itemCount: _placeSuggestions.length,
-                                  separatorBuilder: (_, __) => const Divider(height: 1),
+                                  separatorBuilder: (_, __) =>
+                                      const Divider(height: 1),
                                   itemBuilder: (context, i) {
                                     final item = _placeSuggestions[i];
                                     return ListTile(
@@ -693,14 +693,19 @@ class _SidebarPedidoState extends State<SidebarPedido> {
                                         if (!mounted) return;
                                         pedidosPendentes.clear();
                                         setState(() {});
-                                        WidgetsBinding.instance.addPostFrameCallback((_) {
-                                          if (!mounted) return;
-                                          ScaffoldMessenger.of(context).showSnackBar(
-                                            const SnackBar(
-                                              content: Text('Rota enviada com sucesso!'),
-                                            ),
-                                          );
-                                        });
+                                        WidgetsBinding.instance
+                                            .addPostFrameCallback((_) {
+                                              if (!mounted) return;
+                                              ScaffoldMessenger.of(
+                                                context,
+                                              ).showSnackBar(
+                                                const SnackBar(
+                                                  content: Text(
+                                                    'Rota enviada com sucesso!',
+                                                  ),
+                                                ),
+                                              );
+                                            });
                                         // Reset completo do mapa (remove marcadores/polylines)
                                         PainelMapa.globalKey.currentState
                                             ?.clearAllMarkers();
