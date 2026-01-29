@@ -6,6 +6,7 @@ import '../services/supabase_service.dart';
 import '../services/rota_service.dart';
 import 'dart:async';
 import '../core/constants/api_keys.dart';
+import '../core/app_state.dart';
 import '../services/google_places.dart';
 import '../services/google_directions.dart';
 import 'painel_mapa.dart';
@@ -23,7 +24,7 @@ class _SidebarPedidoState extends State<SidebarPedido> {
   final _nomeController = TextEditingController();
   final _enderecoController = TextEditingController();
   final _obsController = TextEditingController();
-  String _tipoServico = 'entrega';
+  String _tipoServico = 'Entrega';
   // motorista selecionado atualmente não utilizado (removido para limpeza)
   double? _lat;
   double? _lng;
@@ -134,7 +135,7 @@ class _SidebarPedidoState extends State<SidebarPedido> {
       _lat = null;
       _lng = null;
       setState(() {
-        _tipoServico = 'entrega';
+        _tipoServico = 'Entrega';
       });
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Entrega salva como pendente')),
@@ -152,8 +153,13 @@ class _SidebarPedidoState extends State<SidebarPedido> {
 
   Future<Map<String, double>?> _geocodeAddress(String address) async {
     try {
+      var addr = address.trim();
+      // Specific fix: ensure 'Rua das Gaivotas' includes neighborhood/city/state
+      if (addr.toLowerCase().contains('rua das gaivotas') && !addr.toLowerCase().contains('florian')) {
+        addr = '$addr, Ingleses, Florianópolis, SC';
+      }
       final key = ApiKeys.googleMapsKey;
-      return await geocodeAddress(address, key);
+      return await geocodeAddress(addr, key);
     } catch (e) {
       debugPrint('DEBUG: geocodeAddress error: $e');
       return null;
@@ -280,20 +286,19 @@ class _SidebarPedidoState extends State<SidebarPedido> {
                           initialValue: _tipoServico,
                           items: const [
                             DropdownMenuItem(
-                              value: 'entrega',
+                              value: 'Entrega',
                               child: Text('Entrega'),
                             ),
                             DropdownMenuItem(
-                              value: 'retirada',
-                              child: Text('Retirada'),
+                              value: 'Recolha',
+                              child: Text('Recolha'),
                             ),
                             DropdownMenuItem(
-                              value: 'outros',
+                              value: 'Outros',
                               child: Text('Outros'),
                             ),
                           ],
-                          onChanged: (v) =>
-                              setState(() => _tipoServico = v ?? 'entrega'),
+                          onChanged: (v) => setState(() => _tipoServico = v ?? 'Entrega'),
                           decoration: InputDecoration(
                             labelText: 'Tipo de Serviço',
                             isDense: true,
@@ -456,14 +461,12 @@ class _SidebarPedidoState extends State<SidebarPedido> {
                       itemCount: entregas.length,
                       itemBuilder: (context, index) {
                         final e = entregas[index];
-                        final t = e.tipo.toLowerCase();
-                        final borderColor = t.contains('entrega')
-                            ? Colors.blue.shade300
-                            : (t.contains('retira') ||
-                                  t.contains('coleta') ||
-                                  t.contains('retirada'))
-                            ? Colors.orange.shade300
-                            : Colors.purple.shade200;
+                            final t = e.tipo.toLowerCase();
+                            final borderColor = t.contains('entrega')
+                              ? Colors.blue.shade300
+                              : (t.contains('recolha') || t.contains('recol') || t.contains('coleta'))
+                              ? Colors.orange.shade300
+                              : Colors.purple.shade200;
 
                         return Card(
                           elevation: 4,
@@ -597,6 +600,20 @@ class _SidebarPedidoState extends State<SidebarPedido> {
                   width: double.infinity,
                   child: ElevatedButton.icon(
                     onPressed: () async {
+                      // Verifica se há pedidos pendentes antes de tentar organizar/enviar rota
+                      if (pedidosPendentes.isEmpty) {
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text(
+                                'Ops! Adicione pedidos à lista antes de enviar a rota.',
+                              ),
+                            ),
+                          );
+                        }
+                        return;
+                      }
+
                       showDialog<void>(
                         context: context,
                         barrierDismissible: false,
@@ -728,6 +745,9 @@ class _SidebarPedidoState extends State<SidebarPedido> {
                                     ),
                                     subtitle: Text(m.placaVeiculo),
                                     onTap: () async {
+                                      // set selected motorista for map filtering
+                                      AppState.instance.selectedMotoristaId = m.id;
+                                      PainelMapa.globalKey.currentState?.setState(() {});
                                       Navigator.of(ctx).pop();
                                       showDialog<void>(
                                         context: context,
@@ -828,7 +848,7 @@ class _SidebarPedidoState extends State<SidebarPedido> {
                                           _nomeController.clear();
                                           _enderecoController.clear();
                                           _obsController.clear();
-                                          _tipoServico = 'entrega';
+                                          _tipoServico = 'Entrega';
                                         });
                                         WidgetsBinding.instance.addPostFrameCallback((_) {
                                           if (!mounted) return;

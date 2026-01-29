@@ -2,11 +2,15 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
-// 'foundation' imported elsewhere via material; remove redundant import
+// 'foundation' imported via material
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
+import 'package:flutter/foundation.dart';
+import '../src/js_interop_stub.dart'
+  if (dart.library.html) '../src/js_interop_web.dart' as js_interop;
+import 'dart:convert';
 import '../core/app_state.dart';
 import '../models/motorista.dart';
 import '../models/entrega.dart';
@@ -28,6 +32,9 @@ class PainelMapaState extends State<PainelMapa> with TickerProviderStateMixin {
   final Set<Marker> _markers = <Marker>{};
   final Set<Marker> _motoristaMarkers = <Marker>{};
   final Set<Marker> _entregaMarkers = <Marker>{};
+  // Track entrega status and rota status to support preservation of 'falha' pins
+  final Map<String, String> _entregaStatusMap = <String, String>{};
+  final Map<String, String?> _entregaRotaStatusMap = <String, String?>{};
   // Keep a map of motorista_id -> Marker to update positions without flicker
   final Map<String, Marker> _motoristasMarkersMap = <String, Marker>{};
   // Active animation controllers for markers (to interpolate movement)
@@ -35,6 +42,7 @@ class PainelMapaState extends State<PainelMapa> with TickerProviderStateMixin {
 
   StreamSubscription<List<Motorista>>? _motoristaSub;
   StreamSubscription<List<Entrega>>? _entregasSub;
+  StreamSubscription<List<Map<String, dynamic>>>? _rotasSub;
 
   LatLng? _posicaoEmpresa;
   static const CameraPosition _posicaoInicial = CameraPosition(
@@ -58,6 +66,7 @@ class PainelMapaState extends State<PainelMapa> with TickerProviderStateMixin {
     if (!got) await _loadEmpresaFromPrefs();
     _listenMotoristas();
     _listenEntregas();
+    _listenRotas();
     setState(() => _initialPositionAcquired = true);
 
     if (_posicaoEmpresa != null &&
@@ -66,15 +75,99 @@ class PainelMapaState extends State<PainelMapa> with TickerProviderStateMixin {
     }
   }
 
+  void _listenRotas() {
+    try {
+      _rotasSub = SupabaseService.instance.streamRotas().listen((list) {
+        try {
+          var anyFinalizada = false;
+          for (final rota in list) {
+            final status = rota['status']?.toString().toLowerCase();
+            if (status == 'finalizada') {
+              anyFinalizada = true;
+              // remover marcadores de entregas vinculadas a esta rota e motoristas
+              final motoristaId = rota['motorista_id']?.toString();
+              // remover marcador do motorista
+              if (motoristaId != null) {
+                _motoristasMarkersMap.remove(motoristaId);
+                _motoristaMarkers.removeWhere((mr) => mr.markerId.value == 'motorista_$motoristaId');
+              }
+
+              // remover entregas listadas na rota
+              try {
+                final entregasField = rota['entregas'];
+                List<dynamic> entregaIds = [];
+                if (entregasField != null) {
+                  try {
+                    entregaIds = jsonDecode(entregasField.toString()) as List<dynamic>;
+                  } catch (e) {
+                    entregaIds = entregasField
+                        .toString()
+                        .replaceAll(RegExp(r'[\[\]"]'), '')
+                        .split(',')
+                        .map((s) => s.trim())
+                        .where((s) => s.isNotEmpty)
+                        .toList();
+                  }
+                }
+                if (entregaIds.isNotEmpty) {
+                  final ids = entregaIds.map((e) => e.toString()).toSet();
+                  if (kIsWeb) {
+                    for (final id in ids) {
+                      try {
+                        js_interop.callRemoveAdvancedMarker('pedido_$id');
+                      } catch (e) {
+                        debugPrint('removeAdvancedMarker error: $e');
+                      }
+                    }
+                  }
+                  _entregaMarkers.removeWhere((m) {
+                    final id = m.markerId.value.replaceFirst('pedido_', '');
+                    return ids.contains(id);
+                  });
+                }
+              } catch (e) {
+                debugPrint('Erro ao processar entregas na rota finalizada: $e');
+              }
+            }
+          }
+          if (mounted) {
+            if (anyFinalizada) {
+              // limpar todos os marcadores para garantir remoção dos pinos vermelhos
+              _markers.clear();
+              _motoristaMarkers.clear();
+              _entregaMarkers.clear();
+            }
+            setState(() => _rebuildMarkers());
+          }
+        } catch (e) {
+          debugPrint('Erro no listener de rotas: $e');
+        }
+      }, onError: (err) {
+        debugPrint('Realtime error (rotas listener): $err');
+      });
+    } catch (e) {
+      debugPrint('Erro ao iniciar listener de rotas: $e');
+    }
+  }
+
   void _listenMotoristas() {
     _motoristaSub = SupabaseService.instance.streamMotoristasOnline().listen(
       (list) {
         try {
+          final selectedId = AppState.instance.selectedMotoristaId;
           for (final m in list) {
             final lat = m.latitude;
             final lng = m.longitude;
             if (lat == null || lng == null) continue;
             final id = m.id.toString();
+
+            // If a motorista is selected in the sidebar, only show that one
+            if (selectedId != null && selectedId.isNotEmpty && selectedId != id) {
+              // remove any existing marker for this motorista
+              _motoristasMarkersMap.remove(id);
+              _motoristaMarkers.removeWhere((mr) => mr.markerId.value == 'motorista_$id');
+              continue;
+            }
 
             final newPos = LatLng(lat, lng);
 
@@ -109,31 +202,145 @@ class PainelMapaState extends State<PainelMapa> with TickerProviderStateMixin {
 
   void _listenEntregas() {
     _entregasSub = SupabaseService.instance.streamEntregas().listen((list) {
+      // Se a lista do stream vier vazia, limpar marcadores imediatamente
+      if (list.isEmpty) {
+        setState(() {
+          _markers.clear();
+          _motoristaMarkers.clear();
+          _entregaMarkers.clear();
+        });
+        return;
+      }
       final newMarkers = <Marker>{};
+      final webMarkers = <Marker>{};
       for (final e in list) {
         if (e.lat == null || e.lng == null) continue;
-        final hue = (e.status == 'pendente')
-            ? BitmapDescriptor.hueOrange
-            : (e.status == 'em_rota')
-            ? BitmapDescriptor.hueViolet
-            : BitmapDescriptor.hueBlue;
-        newMarkers.add(
-          Marker(
-            markerId: MarkerId('pedido_${e.id}'),
-            position: LatLng(e.lat!, e.lng!),
-            infoWindow: InfoWindow(
-              title: e.cliente.isNotEmpty ? e.cliente : e.endereco,
+
+        // Se entrega finalizada/entregue: remover imediatamente (não exibir)
+        if (e.status.toLowerCase() == 'entregue') {
+          continue;
+        }
+
+        // Coleta status/rotaStatus e decide exibição
+        final rotaStatus = e.rota != null && e.rota!['status'] != null
+            ? e.rota!['status'].toString().toLowerCase()
+            : null;
+        // Se a rota vinculada estiver finalizada, ignorar esta entrega
+        if (rotaStatus == 'finalizada') continue;
+        // Se entrega com falha: só exibir se a rota NÃO estiver finalizada
+        if (e.status.toLowerCase() == 'falha' && rotaStatus == 'finalizada') {
+          // a rota foi finalizada: então o pino de falha pode ser removido
+          continue;
+        }
+
+        // Escolhe cor com regras cirúrgicas por tipo/status
+        final tipo = e.tipo.toLowerCase();
+        final status = e.status.toLowerCase();
+        double hue;
+        final isFalha = status == 'falha';
+        if (isFalha) {
+          hue = BitmapDescriptor.hueRed; // falha sempre vermelho
+        } else if (status == 'pendente') {
+          if (tipo == 'entrega') {
+            hue = BitmapDescriptor.hueBlue; // ENTREGA pendente: Azul
+          } else if (tipo == 'recolha' || tipo.contains('recol')) {
+            hue = BitmapDescriptor.hueOrange; // RECOLHA pendente: Laranja
+          } else {
+            hue = BitmapDescriptor.hueViolet; // OUTROS pendentes: Lilás
+          }
+        } else {
+          hue = BitmapDescriptor.hueViolet; // fallback
+        }
+
+        // track status/rota for this entrega id
+        _entregaStatusMap[e.id] = e.status;
+        _entregaRotaStatusMap[e.id] = rotaStatus;
+
+        final markerId = 'pedido_${e.id}';
+
+        if (kIsWeb) {
+          // Build HTML for the AdvancedMarkerElement with explicit size/styles
+          final color = isFalha
+              ? '#d32f2f'
+              : (hue == BitmapDescriptor.hueBlue
+                  ? '#1976d2'
+                  : (hue == BitmapDescriptor.hueOrange ? '#fb8c00' : '#8e24aa'));
+          final xHtml = isFalha
+              ? '<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:white;font-weight:bold;">✕</div>'
+              : '';
+
+          // Emergency CSS ensures the element has a fixed size and visible styles
+          final content = '<div style="width:24px;height:24px;border-radius:50%;border:2px solid white;display:flex;align-items:center;justify-content:center;color:white;font-weight:bold;box-shadow:0 2px 4px rgba(0,0,0,0.3);background:$color;">$xHtml</div>';
+          try {
+            js_interop.callCreateAdvancedMarker(markerId, content, e.lat!, e.lng!);
+          } catch (_) {}
+
+          // Also add a corresponding Flutter Marker into the markers set so the
+          // `GoogleMap` widget has a matching Marker for viewport calculations
+          // and as a fallback when AdvancedMarkerElement is not visible.
+          webMarkers.add(
+            Marker(
+              markerId: MarkerId(markerId),
+              position: LatLng(e.lat!, e.lng!),
+              infoWindow: InfoWindow(
+                title: e.cliente.isNotEmpty ? e.cliente : e.endereco,
+              ),
+              icon: BitmapDescriptor.defaultMarkerWithHue(hue),
             ),
-            icon: BitmapDescriptor.defaultMarkerWithHue(hue),
-          ),
-        );
+          );
+        } else {
+          newMarkers.add(
+            Marker(
+              markerId: MarkerId(markerId),
+              position: LatLng(e.lat!, e.lng!),
+              infoWindow: InfoWindow(
+                title: e.cliente.isNotEmpty ? e.cliente : e.endereco,
+              ),
+              icon: BitmapDescriptor.defaultMarkerWithHue(hue),
+            ),
+          );
+        }
       }
       setState(() {
-        _entregaMarkers
-          ..clear()
-          ..addAll(newMarkers);
+        if (kIsWeb) {
+          _entregaMarkers
+            ..clear()
+            ..addAll(webMarkers);
+        } else {
+          _entregaMarkers
+            ..clear()
+            ..addAll(newMarkers);
+        }
         _rebuildMarkers();
       });
+      // Cleanup: remove any previously preserved 'falha' markers whose rota is now finalizada
+      try {
+        final toRemove = <Marker>[];
+        for (final m in _entregaMarkers) {
+          final id = m.markerId.value;
+          if (id.toLowerCase().startsWith('pedido_')) {
+            final entregaId = id.replaceFirst('pedido_', '');
+            final status = _entregaStatusMap[entregaId]?.toLowerCase();
+            final rotaStatus = _entregaRotaStatusMap[entregaId]?.toLowerCase();
+            if (status == 'falha' && rotaStatus == 'finalizada') {
+              toRemove.add(m);
+            }
+          }
+        }
+        if (toRemove.isNotEmpty) {
+          setState(() {
+              if (kIsWeb) {
+                for (final m in toRemove) {
+                  try {
+                    js_interop.callRemoveAdvancedMarker(m.markerId.value);
+                  } catch (_) {}
+                }
+              }
+              _entregaMarkers.removeWhere((m) => toRemove.contains(m));
+              _rebuildMarkers();
+          });
+        }
+      } catch (_) {}
     }, onError: (_) {});
   }
 
@@ -374,10 +581,40 @@ class PainelMapaState extends State<PainelMapa> with TickerProviderStateMixin {
   /// Limpa todos os marcadores de motoristas/entregas e polylines do mapa,
   /// deixando apenas o marcador da empresa (se houver).
   void clearAllMarkers() {
+    // Preserve 'falha' entrega markers whose rota is not finalizada.
+    final preserved = <Marker>{};
+    for (final m in _entregaMarkers) {
+      final id = m.markerId.value;
+      if (id.toLowerCase().startsWith('pedido_')) {
+        final entregaId = id.replaceFirst('pedido_', '');
+        final status = _entregaStatusMap[entregaId]?.toLowerCase();
+        final rotaStatus = _entregaRotaStatusMap[entregaId]?.toLowerCase();
+        if (status == 'falha' && rotaStatus != 'finalizada') {
+          preserved.add(m);
+        }
+      }
+    }
+
     setState(() {
       _motoristaMarkers.clear();
-      _entregaMarkers.clear();
-      _markers.clear();
+      // remove advanced markers for deliveries not preserved
+      if (kIsWeb) {
+        final toRemove = _entregaMarkers.where((m) => !preserved.contains(m)).toList();
+        for (final m in toRemove) {
+          try {
+            final id = m.markerId.value;
+            js_interop.callRemoveAdvancedMarker(id);
+          } catch (_) {}
+        }
+      }
+
+      _entregaMarkers
+        ..clear()
+        ..addAll(preserved);
+      _markers
+        ..clear()
+        ..addAll(_motoristaMarkers)
+        ..addAll(_entregaMarkers);
       if (_posicaoEmpresa != null) _markers.add(_companyMarker());
     });
   }
@@ -519,6 +756,7 @@ class PainelMapaState extends State<PainelMapa> with TickerProviderStateMixin {
   void dispose() {
     _motoristaSub?.cancel();
     _entregasSub?.cancel();
+    _rotasSub?.cancel();
     super.dispose();
   }
 }

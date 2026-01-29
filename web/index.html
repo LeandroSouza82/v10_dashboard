@@ -12,6 +12,68 @@
   <script
     src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBeec8r4DWBdNIEFSEZg1CgRxIHjYMV9dM&libraries=places,marker&v=weekly"
     async defer></script>
+  <script>
+    // Helper functions to manage AdvancedMarkerElement for web builds.
+    window._v10AdvancedMarkers = window._v10AdvancedMarkers || {};
+
+    window.createAdvancedMarker = function (id, html, lat, lng) {
+      try {
+        if (!window.google || !window.google.maps || !window.google.maps.marker) return;
+        // find a google.maps.Map instance on window
+        var map = null;
+        for (var k in window) {
+          try {
+            var v = window[k];
+            if (v && v instanceof google.maps.Map) { map = v; break; }
+          } catch (e) { }
+        }
+        if (!map) return;
+        // remove existing
+        if (window._v10AdvancedMarkers[id]) {
+          try { window._v10AdvancedMarkers[id].map = null; } catch (e) { }
+        }
+        var container = document.createElement('div');
+        container.innerHTML = html;
+        // Emergency CSS: ensure the marker content has size and is above the map
+        try {
+          container.style.position = 'relative';
+          container.style.zIndex = '9999';
+          container.style.pointerEvents = 'auto';
+          if (container.firstElementChild) {
+            try {
+              container.firstElementChild.style.zIndex = '9999';
+              container.firstElementChild.style.position = 'relative';
+            } catch (e) { }
+          }
+        } catch (e) { }
+        var adv = new google.maps.marker.AdvancedMarkerElement({
+          map: map,
+          position: { lat: parseFloat(lat), lng: parseFloat(lng) },
+          content: container
+        });
+        window._v10AdvancedMarkers[id] = adv;
+      } catch (e) {
+        console.error('createAdvancedMarker error', e);
+      }
+    };
+
+    window.updateAdvancedMarkerPosition = function (id, lat, lng) {
+      try {
+        var adv = window._v10AdvancedMarkers[id];
+        if (!adv) return;
+        adv.position = { lat: parseFloat(lat), lng: parseFloat(lng) };
+      } catch (e) { }
+    };
+
+    window.removeAdvancedMarker = function (id) {
+      try {
+        var adv = window._v10AdvancedMarkers[id];
+        if (!adv) return;
+        try { adv.map = null; } catch (e) { }
+        delete window._v10AdvancedMarkers[id];
+      } catch (e) { }
+    };
+  </script>
   <style>
     html,
     body {

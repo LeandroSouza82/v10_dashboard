@@ -247,7 +247,92 @@ class SupabaseService {
     }
   }
 
+  /// Atualiza localização do motorista (usado pelo app móvel a cada X segundos).
+  /// Campos: `lat`, `lng`, `heading` (opcional) e `ultimo_sinal`.
+  Future<void> updateMotoristaLocation(String motoristaId, double lat, double lng, {double? heading}) async {
+    try {
+      final parsed = int.tryParse(motoristaId) ?? motoristaId;
+      final payload = <String, dynamic>{
+        'lat': lat.toString(),
+        'lng': lng.toString(),
+        'ultimo_sinal': DateTime.now().toIso8601String(),
+      };
+      if (heading != null) payload['heading'] = heading.toString();
+      await _supabase.from('motoristas').update(payload).eq('id', parsed);
+    } catch (e) {
+      debugPrint('Erro no SupabaseService (updateMotoristaLocation): $e');
+      rethrow;
+    }
+  }
+
+  /// Marca uma entrega como concluída e, se for a última entrega associada
+  /// à rota do motorista, marca a rota como finalizada.
+  Future<void> finalizarEntrega(String entregaId) async {
+    try {
+      // Atualiza status da entrega
+      await atualizarStatusEntrega(entregaId, 'entregue');
+
+      // Procurar rotas que contenham esta entrega e ainda não estejam finalizadas
+      final rotasData = await _supabase
+          .from('rotas')
+          .select()
+          .neq('status', 'finalizada');
+      final rotas = _toMapList(rotasData);
+      for (final rota in rotas) {
+        try {
+          final entregasField = rota['entregas'];
+          if (entregasField == null) continue;
+          List<dynamic> entregaIds;
+          try {
+            entregaIds = jsonDecode(entregasField.toString()) as List<dynamic>;
+          } catch (_) {
+            // não é JSON — tentar interpretar como lista separada por vírgula
+            entregaIds = entregasField
+                .toString()
+                .replaceAll(RegExp(r'[\[\]"]'), '')
+                .split(',')
+                .map((s) => s.trim())
+                .where((s) => s.isNotEmpty)
+                .toList();
+          }
+          final idsStr = entregaIds.map((e) => e.toString()).toList();
+          if (!idsStr.contains(entregaId)) continue;
+
+          // Verificar se ainda existem entregas pendentes/não concluídas nessa rota
+          final idsToQuery = idsStr.map((s) => int.tryParse(s) ?? s).toList();
+          final idsParam = '(${idsToQuery.map((e) => e.toString()).join(',')})';
+          final entregasData = await _supabase
+              .from('entregas')
+              .select()
+              .filter('id', 'in', idsParam);
+          final todasEntregas = _toMapList(entregasData);
+          // Considerar 'entregue' ou 'falha' como finalizadas para a rota.
+          final restantes = todasEntregas.where((m) {
+            final s = (m['status'] ?? '').toString().toLowerCase();
+            return s != 'entregue' && s != 'falha';
+          }).toList();
+          if (restantes.isEmpty) {
+            try {
+              await _supabase
+                  .from('rotas')
+                  .update({'status': 'finalizada', 'finished_at': DateTime.now().toIso8601String()})
+                  .eq('id', rota['id']);
+            } catch (e) {
+              debugPrint('Aviso: falha ao finalizar rota ${rota['id']}: $e');
+            }
+          }
+        } catch (e) {
+          debugPrint('Erro ao processar rota para entrega $entregaId: $e');
+        }
+      }
+    } catch (e) {
+      debugPrint('Erro no SupabaseService (finalizarEntrega): $e');
+      rethrow;
+    }
+  }
+
   Stream<List<Entrega>> streamEntregas() {
+    // Stream apenas entregas que não foram concluídas
     final controller = StreamController<List<Entrega>>.broadcast();
     bool isCanceled = false;
     StreamSubscription? sub;
@@ -268,13 +353,21 @@ class SupabaseService {
     _subscribe = () {
       try {
         sub = _supabase
-            .from('entregas')
-            .stream(primaryKey: ['id'])
-            .listen(
+          .from('entregas')
+          .stream(primaryKey: ['id'])
+          .neq('status', 'entregue')
+          .listen(
               (event) {
                 try {
                   final list = _toMapList(event);
-                  final models = list.map((e) => Entrega.fromJson(e)).toList();
+                  var models = list.map((e) => Entrega.fromJson(e)).toList();
+                  // Filtrar apenas entregas criadas hoje (same local date)
+                  final now = DateTime.now();
+                  models = models.where((m) {
+                    final d = m.criadoEm;
+                    if (d == null) return false;
+                    return d.year == now.year && d.month == now.month && d.day == now.day;
+                  }).toList();
                   controller.add(models);
                   retrySeconds = 1; // reset on success
                 } catch (e, st) {
@@ -367,6 +460,121 @@ class SupabaseService {
     }
   }
 
+  /// Stream de rotas (todas). Retorna lista de mapas representando linhas da tabela.
+  Stream<List<Map<String, dynamic>>> streamRotas() {
+    final controller = StreamController<List<Map<String, dynamic>>>.broadcast();
+    bool isCanceled = false;
+    StreamSubscription? sub;
+    int retrySeconds = 1;
+
+    late void Function() _subscribe;
+
+    void scheduleReconnect() {
+      if (isCanceled) return;
+      final delay = Duration(seconds: retrySeconds);
+      Timer(delay, () {
+        if (isCanceled) return;
+        retrySeconds = min(retrySeconds * 2, 30);
+        _subscribe();
+      });
+    }
+    _subscribe = () {
+      try {
+        sub = _supabase
+            .from('rotas')
+            .stream(primaryKey: ['id'])
+            .listen((event) {
+          try {
+            final list = _toMapList(event);
+            controller.add(list);
+            retrySeconds = 1;
+          } catch (e, st) {
+            debugPrint('Erro no SupabaseService (streamRotas): $e');
+            controller.addError(e, st);
+          }
+        }, onError: (err) {
+          debugPrint('Realtime error (rotas): $err');
+          controller.addError(err);
+          scheduleReconnect();
+        }, onDone: () {
+          if (!isCanceled) scheduleReconnect();
+        });
+      } catch (e) {
+        debugPrint('Erro ao subscrever rotas realtime: $e');
+        controller.addError(e);
+        scheduleReconnect();
+      }
+    };
+
+    _subscribe();
+
+    controller.onCancel = () {
+      isCanceled = true;
+      sub?.cancel();
+    };
+
+    return controller.stream;
+  }
+
+  /// Verifica rotas do motorista e finaliza rotas sem entregas pendentes/em_rota.
+  Future<void> checkAndFinalizeRotasForMotorista(String motoristaId) async {
+    try {
+      final parsedMotorista = int.tryParse(motoristaId) ?? motoristaId;
+      final rotasData = await _supabase
+          .from('rotas')
+          .select()
+          .eq('motorista_id', parsedMotorista)
+          .neq('status', 'finalizada');
+      final rotas = _toMapList(rotasData);
+      for (final rota in rotas) {
+        try {
+          final entregasField = rota['entregas'];
+          if (entregasField == null) continue;
+          List<dynamic> entregaIds;
+          try {
+            entregaIds = jsonDecode(entregasField.toString()) as List<dynamic>;
+          } catch (_) {
+            entregaIds = entregasField
+                .toString()
+                .replaceAll(RegExp(r'[\[\]"]'), '')
+                .split(',')
+                .map((s) => s.trim())
+                .where((s) => s.isNotEmpty)
+                .toList();
+          }
+
+          final idsToQuery = entregaIds.map((s) => int.tryParse(s.toString()) ?? s).toList();
+          final idsParam = '(${idsToQuery.map((e) => e.toString()).join(',')})';
+          final entregasData = await _supabase
+              .from('entregas')
+              .select()
+              .filter('id', 'in', idsParam);
+          final todas = _toMapList(entregasData);
+          // verificar client-side se existem entregas com status pendente ou em_rota
+          final pendentes = todas.where((m) {
+            final s = (m['status'] ?? '').toString().toLowerCase();
+            return s == 'pendente' || s == 'em_rota';
+          }).toList();
+          if (pendentes.isEmpty) {
+            try {
+              await _supabase
+                  .from('rotas')
+                  .update({'status': 'finalizada', 'finished_at': DateTime.now().toIso8601String()})
+                  .eq('id', rota['id']);
+            } catch (e) {
+              debugPrint('Aviso: falha ao finalizar rota ${rota['id']}: $e');
+            }
+          }
+        } catch (e) {
+          debugPrint('Erro ao verificar rota ${rota['id']}: $e');
+        }
+      }
+    } catch (e) {
+      debugPrint('Erro em checkAndFinalizeRotasForMotorista: $e');
+      rethrow;
+    }
+  }
+
   /// Cria uma rota agrupando entregas para um motorista.
   /// Insere um registro na tabela `rotas` com o motorista e ids das entregas.
   Future<void> criarRota(String motoristaId, List<Entrega> entregas) async {
@@ -404,7 +612,15 @@ class SupabaseService {
       try {
         debugPrint('DEBUG: criando rota payload -> ${jsonEncode(payload)}');
       } catch (_) {}
-      await _supabase.from('rotas').insert(payload);
+
+      // Proteção: garantir que o insert não quebre o fluxo (try/catch gigante)
+      try {
+        await _supabase.from('rotas').insert(payload);
+      } catch (e, st) {
+        debugPrint('Erro ao inserir rota no Supabase: $e');
+        debugPrint(st.toString());
+        // Não fazer navegação ou reload — apenas log e continuar
+      }
 
       // Após criar rota, atualizar status das entregas para 'em_rota' em massa
       try {

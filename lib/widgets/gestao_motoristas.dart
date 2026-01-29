@@ -76,9 +76,8 @@ class _GestaoMotoristasState extends State<GestaoMotoristas> {
                   final t = e.tipo.toLowerCase();
                   if (t.contains('entrega')) {
                     borderColor = Colors.blue.shade300;
-                  } else if (t.contains('retira') ||
-                      t.contains('coleta') ||
-                      t.contains('retirada')) {
+                  } else if (t.contains('recolha') || t.contains('recol') ||
+                      t.contains('coleta')) {
                     borderColor = Colors.orange.shade300;
                   } else {
                     borderColor = Colors.purple.shade200;
