@@ -56,9 +56,7 @@ class _SidebarPedidoState extends State<SidebarPedido> {
         // primeira tentativa
         var coords = await _geocodeAddress(addr);
         // segunda tentativa: adicionar ", Brasil" se primeira falhar
-        if (coords == null) {
-          coords = await _geocodeAddress('$addr, Brasil');
-        }
+        coords ??= await _geocodeAddress('$addr, Brasil');
 
         if (coords == null) {
           // Não bloquear o salvamento caso o geocode falhe: o endereço
@@ -351,7 +349,7 @@ class _SidebarPedidoState extends State<SidebarPedido> {
                                   borderRadius: BorderRadius.circular(8),
                                   boxShadow: [
                                     BoxShadow(
-                                      color: Colors.black.withOpacity(0.08),
+                                      color: const Color.fromRGBO(0, 0, 0, 0.08),
                                       blurRadius: 6,
                                       offset: const Offset(0, 2),
                                     ),
