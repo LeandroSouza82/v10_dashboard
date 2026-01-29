@@ -61,22 +61,14 @@ class _SidebarPedidoState extends State<SidebarPedido> {
         }
 
         if (coords == null) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text(
-                  'Erro: Não localizamos este endereço no mapa. A entrega não foi salva.',
-                ),
-              ),
-            );
-          }
-          return;
+          // Não bloquear o salvamento caso o geocode falhe: o endereço
+          // normalmente virá do Autocomplete do Google (ou o usuário pode
+          // salvar sem coordenadas). Continuamos sem lat/lng.
+        } else {
+          // garantir doubles e usar coordenadas encontradas
+          _lat = (coords['lat'] as double);
+          _lng = (coords['lng'] as double);
         }
-        // garantir doubles
-        _lat = (coords['lat'] as double);
-        _lng = (coords['lng'] as double);
-        // debug rápido das coordenadas
-        // coordenadas capturadas
       }
       final entrega = Entrega(
         id: DateTime.now().millisecondsSinceEpoch.toString(),
