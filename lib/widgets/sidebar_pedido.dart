@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../models/entrega.dart';
 import '../services/supabase_service.dart';
 import '../services/rota_service.dart';
+import 'dart:async';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import '../core/constants/api_keys.dart';
@@ -27,12 +28,17 @@ class _SidebarPedidoState extends State<SidebarPedido> {
   double? _lng;
   bool _enviando = false;
   List<Entrega> pedidosPendentes = [];
+  // Places autocomplete
+  List<Map<String, String>> _placeSuggestions = [];
+  Timer? _placeDebounce;
+  bool _showPlaceSuggestions = false;
 
   @override
   void dispose() {
     _nomeController.dispose();
     _enderecoController.dispose();
     _obsController.dispose();
+    _placeDebounce?.cancel();
     super.dispose();
   }
 
@@ -70,9 +76,7 @@ class _SidebarPedidoState extends State<SidebarPedido> {
         _lat = (coords['lat'] as double);
         _lng = (coords['lng'] as double);
         // debug rápido das coordenadas
-        try {
-          print('Lat: ${_lat}, Lng: ${_lng}');
-        } catch (_) {}
+        // coordenadas capturadas
       }
       final entrega = Entrega(
         id: DateTime.now().millisecondsSinceEpoch.toString(),
@@ -111,9 +115,7 @@ class _SidebarPedidoState extends State<SidebarPedido> {
             ),
           );
           // debug coordenadas do marker
-          try {
-            print('Lat: ${markerLat}, Lng: ${markerLng}');
-          } catch (_) {}
+          // coordenadas do marker disponíveis
           PainelMapa.globalKey.currentState?.addDeliveryMarker(marker);
         } catch (_) {
           // ignore if map not ready
@@ -169,6 +171,81 @@ class _SidebarPedidoState extends State<SidebarPedido> {
     } catch (_) {
       return null;
     }
+  }
+
+  void _onAddressChanged(String value) {
+    _placeDebounce?.cancel();
+    if (value.trim().isEmpty) {
+      setState(() {
+        _placeSuggestions = [];
+        _showPlaceSuggestions = false;
+      });
+      return;
+    }
+    _placeDebounce = Timer(const Duration(milliseconds: 350), () async {
+      await _fetchPlaceSuggestions(value.trim());
+    });
+  }
+
+  Future<void> _fetchPlaceSuggestions(String input) async {
+    final key = ApiKeys.googleMapsKey;
+    final uri = Uri.https('maps.googleapis.com', '/maps/api/place/autocomplete/json', {
+      'input': input,
+      'key': key,
+      'components': 'country:br',
+    });
+    try {
+      final resp = await http.get(uri);
+      if (resp.statusCode != 200) return;
+      final body = resp.body;
+      final jsonBody = body.isNotEmpty ? jsonDecode(body) as Map<String, dynamic> : null;
+      if (jsonBody == null) return;
+      final predictions = (jsonBody['predictions'] as List<dynamic>?) ?? [];
+      final list = <Map<String, String>>[];
+      for (final p in predictions) {
+        final pid = (p as Map<String, dynamic>)['place_id'] as String?;
+        final desc = p['description'] as String?;
+        if (pid != null && desc != null) list.add({'place_id': pid, 'description': desc});
+      }
+      setState(() {
+        _placeSuggestions = list;
+        _showPlaceSuggestions = list.isNotEmpty;
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _fetchPlaceDetails(String placeId) async {
+    final key = ApiKeys.googleMapsKey;
+    final uri = Uri.https('maps.googleapis.com', '/maps/api/place/details/json', {
+      'place_id': placeId,
+      'key': key,
+      'fields': 'formatted_address,geometry',
+    });
+    try {
+      final resp = await http.get(uri);
+      if (resp.statusCode != 200) return;
+      final body = resp.body;
+      final jsonBody = body.isNotEmpty ? jsonDecode(body) as Map<String, dynamic> : null;
+      if (jsonBody == null) return;
+      final result = jsonBody['result'] as Map<String, dynamic>?;
+      if (result == null) return;
+      final formatted = result['formatted_address'] as String?;
+      final location = (result['geometry'] as Map<String, dynamic>?)?['location'] as Map<String, dynamic>?;
+      final lat = location != null ? (location['lat'] as num).toDouble() : null;
+      final lng = location != null ? (location['lng'] as num).toDouble() : null;
+      if (formatted != null) {
+        _enderecoController.text = formatted;
+      }
+      if (lat != null && lng != null) {
+        _lat = lat;
+        _lng = lng;
+        // coordenadas capturadas (via Places ou Geocode)
+      }
+      setState(() {
+        _placeSuggestions = [];
+        _showPlaceSuggestions = false;
+      });
+    } catch (_) {}
   }
 
   @override
@@ -250,24 +327,63 @@ class _SidebarPedidoState extends State<SidebarPedido> {
                         ),
                         const SizedBox(height: 20),
 
-                        // Endereço
-                        TextFormField(
-                          controller: _enderecoController,
-                          decoration: InputDecoration(
-                            labelText: 'Endereço',
-                            isDense: true,
-                            contentPadding: const EdgeInsets.symmetric(
-                              vertical: 12.0,
-                              horizontal: 12.0,
+                        // Endereço com Autocomplete (Google Places)
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            TextFormField(
+                              controller: _enderecoController,
+                              decoration: InputDecoration(
+                                labelText: 'Endereço',
+                                isDense: true,
+                                contentPadding: const EdgeInsets.symmetric(
+                                  vertical: 12.0,
+                                  horizontal: 12.0,
+                                ),
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                              ),
+                              maxLines: 2,
+                              validator: (v) => (v == null || v.trim().isEmpty)
+                                  ? 'Endereço obrigatório'
+                                  : null,
+                              onChanged: _onAddressChanged,
                             ),
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                          ),
-                          maxLines: 2,
-                          validator: (v) => (v == null || v.trim().isEmpty)
-                              ? 'Endereço obrigatório'
-                              : null,
+                            if (_showPlaceSuggestions && _placeSuggestions.isNotEmpty)
+                              Container(
+                                margin: const EdgeInsets.only(top: 6.0),
+                                constraints: const BoxConstraints(maxHeight: 200),
+                                decoration: BoxDecoration(
+                                  color: Theme.of(context).cardColor,
+                                  borderRadius: BorderRadius.circular(8),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: Colors.black.withOpacity(0.08),
+                                      blurRadius: 6,
+                                      offset: const Offset(0, 2),
+                                    ),
+                                  ],
+                                ),
+                                child: ListView.separated(
+                                  shrinkWrap: true,
+                                  padding: EdgeInsets.zero,
+                                  itemCount: _placeSuggestions.length,
+                                  separatorBuilder: (_, __) => const Divider(height: 1),
+                                  itemBuilder: (context, i) {
+                                    final item = _placeSuggestions[i];
+                                    return ListTile(
+                                      title: Text(item['description'] ?? ''),
+                                      onTap: () async {
+                                        final pid = item['place_id'];
+                                        if (pid == null) return;
+                                        await _fetchPlaceDetails(pid);
+                                      },
+                                    );
+                                  },
+                                ),
+                              ),
+                          ],
                         ),
                         const SizedBox(height: 20),
 
@@ -587,11 +703,14 @@ class _SidebarPedidoState extends State<SidebarPedido> {
                                         if (!mounted) return;
                                         pedidosPendentes.clear();
                                         setState(() {});
-                                        ScaffoldMessenger.of(context).showSnackBar(
-                                          const SnackBar(
-                                            content: Text('Rota enviada com sucesso!'),
-                                          ),
-                                        );
+                                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                                          if (!mounted) return;
+                                          ScaffoldMessenger.of(context).showSnackBar(
+                                            const SnackBar(
+                                              content: Text('Rota enviada com sucesso!'),
+                                            ),
+                                          );
+                                        });
                                         // Reset completo do mapa (remove marcadores/polylines)
                                         PainelMapa.globalKey.currentState
                                             ?.clearAllMarkers();
